@@ -1,0 +1,15 @@
+[Unit]
+Description=MPD Web music controller
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/mpd-web
+ExecStart=/root/mpd-web/venv/bin/python3 /root/mpd-web/app.py
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

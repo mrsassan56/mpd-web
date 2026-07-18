@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>MPD Web</title>
+    <link rel="stylesheet" href="/static/desktop/style.css">
+    <script>
+    (function() {
+        if (localStorage.getItem("mpd-prefer-desktop")) return;
+        if (/[?&]desktop=1/.test(location.search)) {
+            localStorage.setItem("mpd-prefer-desktop", "1");
+            return;
+        }
+        if (window.matchMedia("(max-width: 900px)").matches) {
+            location.replace("/m");
+        }
+    })();
+    </script>
+</head>
+<body class="app">
+    <aside class="sidebar">
+        <div class="brand">
+            <span class="brand-mark"></span>
+            <span class="brand-name">MPD</span>
+        </div>
+
+        <nav class="nav">
+            <button class="nav-item active" data-view="now" onclick="showView('now')">
+                <span class="nav-icon">♪</span> Now Playing
+            </button>
+            <button class="nav-item" data-view="queue" onclick="showView('queue')">
+                <span class="nav-icon">☰</span> Queue
+            </button>
+            <button class="nav-item" data-view="recent" onclick="showView('recent')">
+                <span class="nav-icon">↺</span> Recent
+            </button>
+            <button class="nav-item" data-view="playlists" onclick="openLikedFavorites()">
+                <span class="nav-icon">♥</span> Liked
+            </button>
+            <button class="nav-item" data-view="library-folders" onclick="showView('library'); setLibMode('folders')">
+                <span class="nav-icon">▤</span> Folders
+            </button>
+            <button class="nav-item" data-view="library-artists" onclick="showView('library'); setLibMode('artists')">
+                <span class="nav-icon">◎</span> Artists
+            </button>
+            <button class="nav-item" data-view="library" onclick="showView('library'); setLibMode('albums')">
+                <span class="nav-icon">◉</span> Albums
+            </button>
+            <button class="nav-item" data-view="search" onclick="showView('search')">
+                <span class="nav-icon">⌕</span> Search
+            </button>
+            <button class="nav-item" data-view="playlists" onclick="showView('playlists')">
+                <span class="nav-icon">≡</span> Playlists
+            </button>
+            <button class="nav-item" data-view="settings" onclick="showView('settings')">
+                <span class="nav-icon">⚙</span> Settings
+            </button>
+        </nav>
+
+        <div class="sidebar-footer">
+            <label class="player-label">Output</label>
+            <select id="playerSelect" onchange="changePlayer()"></select>
+            <label class="player-label cast-label">
+                <span class="dlna-icon" title="DLNA cast" aria-hidden="true"></span>
+                Cast
+            </label>
+            <select id="castSelect" onchange="onCastSelectChange()" title="DLNA cast target">
+                <option value="">— Off —</option>
+            </select>
+            <a class="mobile-link" href="/m" onclick="localStorage.removeItem('mpd-prefer-desktop')">
+                <span class="nav-icon">📱</span><span class="mobile-link-text">Mobile view →</span>
+            </a>
+        </div>
+    </aside>
+
+    <div class="workspace">
+        <header class="topbar">
+            <h1 class="view-heading" id="viewHeading">Now Playing</h1>
+            <div class="topbar-actions">
+                <button type="button" class="ghost top-icon-btn timer-btn" id="sleepTimerBtn" onclick="toggleSleepPopover()" title="Sleep timer">T</button>
+                <a class="topbar-mobile-link" href="/m" onclick="localStorage.removeItem('mpd-prefer-desktop')">📱 Mobile</a>
+                <button class="ghost layout-toggle" id="themeToggle" onclick="toggleThemeMode()" title="Light / dark theme">◑ Light</button>
+                <button class="ghost layout-toggle" id="compactToggle" onclick="toggleCompactMode()" title="Compact layout">⊟ Compact</button>
+            </div>
+            <div id="sleepPopover" class="sleep-popover hidden">
+                <div class="meta" id="sleepTimerLabel">Sleep off</div>
+                <div class="sleep-actions">
+                    <button type="button" class="pill" data-sleep="off" onclick="setSleepTimer('off')">Off</button>
+                    <button type="button" class="pill" data-sleep="30" onclick="setSleepTimer('minutes', 30)">30</button>
+                    <button type="button" class="pill" data-sleep="60" onclick="setSleepTimer('minutes', 60)">60</button>
+                    <button type="button" class="pill" data-sleep="120" onclick="setSleepTimer('minutes', 120)">120</button>
+                    <button type="button" class="pill" data-sleep="180" onclick="setSleepTimer('minutes', 180)">180</button>
+                </div>
+            </div>
+        </header>
+
+        <main class="content">
+            <section id="view-now" class="view active">
+                <div class="now-hero">
+                    <div class="hero-art-wrap">
+                        <img id="heroCover" class="hero-cover" alt="" style="display:none">
+                        <div id="heroPlaceholder" class="hero-placeholder">♪</div>
+                    </div>
+                    <div class="hero-meta">
+                        <div class="hero-title" id="heroTitle">Loading...</div>
+                        <div class="hero-artist" id="heroArtist"></div>
+                        <div class="hero-album-row">
+                            <div class="hero-album" id="heroAlbum"></div>
+                            <button type="button" class="pill accent search-goto-album" id="heroGotoAlbum" title="Go to album" style="display:none" onclick="goToPlayingAlbum()">→</button>
+                        </div>
+                        <div class="hero-format" id="heroFormat"></div>
+                        <div class="hero-folder" id="heroFolder"></div>
+                    </div>
+                </div>
+                <div class="now-quick-actions">
+                    <button type="button" class="pill side-icon-btn radio-pill" id="radioLocalBtn" onclick="startDesktopRadio('local')" title="Local radio">L</button>
+                    <button type="button" class="pill side-icon-btn radio-pill" id="radioSmartBtn" onclick="startDesktopRadio('smart')" title="Smart radio">S</button>
+                    <button class="pill" onclick="addSimilar()">+ Similar</button>
+                    <button class="pill" onclick="toggleRandom()">Shuffle <span id="randomState">Off</span></button>
+                    <button class="pill" onclick="stopRadio()">■ Stop radio</button>
+                </div>
+                <div class="radio-status" id="radioStatus">Radio off</div>
+            </section>
+
+            <section id="view-library" class="view">
+                <div class="toolbar lib-modes">
+                    <button id="modeAlbums" onclick="setLibMode('albums')">Albums</button>
+                    <button id="modeArtists" onclick="setLibMode('artists')">Artists</button>
+                    <button id="modeFolders" onclick="setLibMode('folders')">Folders</button>
+                </div>
+                <div class="lib-filter-bar">
+                    <input id="libFilter" type="search" placeholder="Filter this list…" oninput="onLibFilterInput()">
+                </div>
+                <div id="folderControls" class="toolbar folder-toolbar">
+                    <span class="path">Path: <span id="currentPath">/</span></span>
+                    <button class="ghost" onclick="goHome()" title="Back to root">←</button>
+                    <button class="ghost" onclick="goUp()" title="Up one folder">↑</button>
+                    <button class="ghost" onclick="updateDatabase()">Update library</button>
+                    <button class="pill accent play-folder-btn" id="playFolderBtn" onclick="playCurrentFolder()" title="Play this folder">▶ Play</button>
+                </div>
+                <div id="libContext" class="lib-context" style="display:none"></div>
+                <div id="browser" class="browser-pane"></div>
+            </section>
+
+            <section id="view-search" class="view">
+                <div class="search-panel">
+                    <input id="searchBox" class="search-input" placeholder="Search your library…  artist:eloy  ·  rainbow by eloy">
+                    <div class="search-chips" id="searchChips">
+                        <button class="active" data-mode="tracks" onclick="setSearchMode('tracks')">Songs</button>
+                        <button data-mode="albums" onclick="setSearchMode('albums')">Albums</button>
+                        <button data-mode="artists" onclick="setSearchMode('artists')">Artists</button>
+                        <button data-mode="genres" onclick="setSearchMode('genres')">Genres</button>
+                    </div>
+                    <div class="search-hint">Live search · field syntax <code>artist:name</code> · <code>title by artist</code></div>
+                    <div id="searchResults" class="scroll-pane"></div>
+                    <div id="genres" class="queue-hidden scroll-pane"></div>
+                    <button id="genreButton" class="ghost queue-hidden" onclick="toggleGenres()">Show Genres</button>
+                </div>
+            </section>
+
+            <section id="view-playlists" class="view">
+                <div class="playlist-toolbar">
+                    <input id="playlistName" placeholder="Playlist name">
+                    <button class="ghost" onclick="createEmptyPlaylist()">New</button>
+                    <button class="ghost" onclick="savePlaylist()">Save queue</button>
+                    <button class="ghost" onclick="renameSelectedPlaylist()">Rename</button>
+                    <button class="ghost" onclick="deleteSelectedPlaylist()">Delete</button>
+                </div>
+                <div class="playlist-manager">
+                    <div id="playlistList" class="playlist-names"></div>
+                    <div id="playlistTracks" class="playlist-tracks"></div>
+                </div>
+            </section>
+
+            <section id="view-queue" class="view">
+                <div class="toolbar">
+                    <button class="ghost" onclick="loadQueue()">Refresh</button>
+                    <button class="ghost" onclick="clearQueue()">Clear queue</button>
+                </div>
+                <div id="queue" class="scroll-pane queue-pane"></div>
+            </section>
+
+            <section id="view-recent" class="view">
+                <div class="toolbar">
+                    <button class="ghost" onclick="loadRecentPlays()">Refresh</button>
+                    <button class="ghost" onclick="clearRecentPlays()">Clear</button>
+                </div>
+                <p class="settings-intro">Tracks you’ve played on this controller. ♥ Liked songs are under Liked / Playlists.</p>
+                <div id="recentList" class="scroll-pane"></div>
+            </section>
+
+            <section id="view-settings" class="view">
+                <p class="settings-intro">Configure MPD output devices. Changes are saved on the Pi and persist across restarts.</p>
+                <div id="settingsPlayers" class="settings-list"></div>
+                <div class="toolbar settings-toolbar">
+                    <button class="ghost" onclick="addSettingsPlayer()">+ Add output</button>
+                    <button class="pill accent" onclick="saveSettingsPlayers()">Save settings</button>
+                </div>
+
+                <h3 class="panel-label" style="margin-top:24px">Playback</h3>
+                <p class="settings-intro">Crossfade blends tracks. MixRamp uses volume tags for smoother/gapless-style transitions when your files support it.</p>
+                <div class="settings-field">
+                    <label>Crossfade (seconds, 0 = off)</label>
+                    <input id="xfadeSeconds" type="number" min="0" max="30" step="1" value="0">
+                </div>
+                <label class="settings-default">
+                    <input type="checkbox" id="mixrampEnabled"> Enable MixRamp
+                </label>
+                <div class="settings-field">
+                    <label>MixRamp threshold (dB)</label>
+                    <input id="mixrampDb" type="number" step="1" value="-17">
+                </div>
+                <div class="toolbar settings-toolbar">
+                    <button class="pill accent" onclick="savePlaybackSettings()">Save playback</button>
+                </div>
+                <div class="meta" id="playbackMsg"></div>
+
+                <h3 class="panel-label" style="margin-top:24px">DLNA cast</h3>
+                <p class="settings-intro">Discover network renderers (TVs, speakers) and cast library tracks to them. The Pi must serve files at a LAN URL the device can reach.</p>
+                <div class="settings-field">
+                    <label>Public base URL</label>
+                    <input id="dlnaPublicBase" placeholder="http://192.168.9.232:5000" value="">
+                </div>
+                <div class="toolbar settings-toolbar">
+                    <button class="ghost" onclick="saveDlnaPublicBase()">Save URL</button>
+                    <button class="pill accent" onclick="scanDlnaDevices()">Scan DLNA</button>
+                    <button class="ghost" onclick="clearDlnaTarget()">Clear target</button>
+                </div>
+                <div class="meta" style="margin:8px 0">Target: <span data-dlna-label>No DLNA target</span></div>
+                <div id="dlnaDeviceList" class="settings-list"></div>
+                <div class="settings-msg" id="dlnaMsg"></div>
+
+                <h3 class="panel-label" style="margin-top:24px">ListenBrainz scrobbling</h3>
+                <p class="settings-intro">Optional. Get a token from <a href="https://listenbrainz.org/settings/" target="_blank" rel="noopener">listenbrainz.org/settings</a>. Plays are also kept in Recently Played locally.</p>
+                <div class="settings-field">
+                    <label>Username (optional)</label>
+                    <input id="lbUsername" placeholder="your LB username" value="">
+                </div>
+                <div class="settings-field">
+                    <label>User token</label>
+                    <input id="lbToken" type="password" placeholder="paste token (leave blank to keep)" value="">
+                </div>
+                <label class="settings-default">
+                    <input type="checkbox" id="lbEnabled"> Enable scrobbling
+                </label>
+                <div class="toolbar settings-toolbar">
+                    <button class="pill accent" onclick="saveListenBrainzSettings()">Save ListenBrainz</button>
+                </div>
+                <div class="meta" id="lbHint"></div>
+
+                <div class="settings-msg" id="settingsMsg"></div>
+            </section>
+        </main>
+    </div>
+
+    <footer class="player-bar">
+        <div class="bar-left">
+            <img id="coverArt" class="bar-cover" alt="" style="display:none">
+            <div class="bar-track">
+                <div class="bar-title" id="title">—</div>
+                <div class="bar-artist" id="artist"></div>
+                <div class="bar-album-row">
+                    <div class="bar-album" id="album"></div>
+                    <button type="button" class="pill accent search-goto-album" id="barGotoAlbum" title="Go to album" style="display:none" onclick="goToPlayingAlbum()">→</button>
+                </div>
+                <div class="bar-format" id="barFormat"></div>
+                <div class="bar-folder queue-hidden" id="folderName"></div>
+            </div>
+        </div>
+
+        <div class="bar-controls">
+            <button class="transport" onclick="cmd('previous')" title="Previous">⏮</button>
+            <button class="transport primary" id="playPauseBtn" onclick="togglePlayPause()" title="Play">▶</button>
+            <button class="transport bar-stop" onclick="cmd('stop')" title="Stop">⏹</button>
+            <button class="transport" onclick="cmd('next')" title="Next">⏭</button>
+            <button class="transport like-btn" id="likeBtn" onclick="likeCurrentSong()" title="Add to Liked Songs" disabled>♥</button>
+            <button class="transport add-pl-btn" id="addToPlaylistBtn" onclick="togglePlaylistPopover()" title="Add to playlist">＋</button>
+            <button type="button" class="transport cast-remote-btn" id="barCastBtn" data-dlna-needs-target="1" onclick="castCurrentSong()" title="Cast to DLNA">
+                <span class="dlna-icon"></span>
+            </button>
+        </div>
+        <div class="dlna-bar-controls" id="dlnaBarControls" style="display:none">
+            <span class="dlna-bar-label" data-dlna-label>DLNA</span>
+            <button type="button" class="pill" onclick="dlnaTransport('pause')" title="Pause cast">❚❚</button>
+            <button type="button" class="pill" onclick="dlnaTransport('stop')" title="Stop cast">■</button>
+        </div>
+
+        <div class="bar-status" id="status">—</div>
+        <div class="player-action-msg" id="playerActionMsg"></div>
+    </footer>
+
+    <div id="playlistPopover" class="playlist-popover">
+        <div class="popover-head">
+            <span>Add to playlist</span>
+            <button type="button" class="popover-close" onclick="closePlaylistPopover()">✕</button>
+        </div>
+        <div id="playlistPopoverList" class="popover-list"></div>
+        <div class="popover-new">
+            <input id="playlistPopoverNew" placeholder="New playlist name">
+            <button type="button" class="ghost" onclick="createAndAddToPlaylist()">Create &amp; add</button>
+        </div>
+    </div>
+
+    <script src="/static/js/api.js"></script>
+    <script src="/static/js/utils.js"></script>
+    <script src="/static/js/playlists.js"></script>
+    <script src="/static/js/dlna.js"></script>
+    <script src="/static/js/shortcuts.js"></script>
+    <script src="/static/js/sleeptimer.js"></script>
+    <script src="/static/js/browserout.js"></script>
+    <script src="/static/js/settings.js?v=5"></script>
+    <script>
+    window.addEventListener("error", function(e) {
+        var t = document.getElementById("title");
+        if (t) t.innerText = "JS ERROR: " + (e.message || String(e));
+    });
+    </script>
+    <script src="/static/desktop/app.js"></script>
+</body>
+</html>

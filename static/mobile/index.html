@@ -1,0 +1,201 @@
+<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>MPD Mobile</title>
+    <link rel="stylesheet" href="/static/mobile/style.css">
+</head>
+<body>
+    <div id="panel-now" class="panel active">
+        <div class="now-card">
+            <div class="now-top">
+                <div class="now-top-left">
+                    <button type="button" class="now-icon-btn history-btn" onclick="showTab('recent')" title="History">H</button>
+                    <button type="button" class="now-icon-btn timer-btn" id="sleepTimerBtn" onclick="toggleSleepPopover()" title="Sleep timer">T</button>
+                    <button type="button" class="now-icon-btn browser-btn" id="browserOutBtn" onclick="toggleBrowserOutput()" title="Play in this browser">B</button>
+                </div>
+                <button type="button" class="now-icon-btn settings-gear" onclick="showTab('settings')" title="Settings">⚙</button>
+            </div>
+            <div id="sleepPopover" class="sleep-popover hidden">
+                <div class="meta" id="sleepTimerLabel">Sleep off</div>
+                <div class="sleep-actions">
+                    <button type="button" data-sleep="off" onclick="setSleepTimer('off')">Off</button>
+                    <button type="button" data-sleep="30" onclick="setSleepTimer('minutes', 30)">30</button>
+                    <button type="button" data-sleep="60" onclick="setSleepTimer('minutes', 60)">60</button>
+                    <button type="button" data-sleep="120" onclick="setSleepTimer('minutes', 120)">120</button>
+                    <button type="button" data-sleep="180" onclick="setSleepTimer('minutes', 180)">180</button>
+                </div>
+            </div>
+            <img id="coverArt" class="cover-art hidden" alt="">
+            <div class="title" id="title">Loading...</div>
+            <div class="artist" id="artist"></div>
+            <div class="album-row">
+                <div class="meta" id="album"></div>
+                <button type="button" class="pill accent search-goto-album" id="nowGotoAlbum" title="Go to album" style="display:none" onclick="goToPlayingAlbum()">→</button>
+            </div>
+            <div class="format-badge" id="audioFormat"></div>
+            <div class="meta" id="status"></div>
+            <div class="transport">
+                <button type="button" class="transport-prev" onclick="cmd('previous')" title="Previous">‹‹</button>
+                <button type="button" class="transport-play" id="playPauseBtn" onclick="togglePlayPause()" title="Play">▶︎</button>
+                <button type="button" class="transport-stop" onclick="cmd('stop')" title="Stop">■</button>
+                <button type="button" class="transport-next" onclick="cmd('next')" title="Next">››</button>
+                <button type="button" class="like-btn" id="likeBtn" onclick="likeCurrentSong()" disabled title="Like">♥</button>
+                <button type="button" class="transport-add" id="addToPlaylistBtn" onclick="togglePlaylistPopover()" title="Playlist">＋</button>
+            </div>
+            <div class="mode-row">
+                <button type="button" class="now-icon-btn mode-icon" id="randomBtn" onclick="toggleRandom()" title="Shuffle">R</button>
+                <button type="button" class="now-icon-btn mode-icon" onclick="addSimilar()" title="Add similar">≈</button>
+                <button type="button" class="now-icon-btn mode-icon" onclick="smartRadio(event)" title="Smart radio">★</button>
+                <button type="button" class="now-icon-btn mode-icon" id="autoRadioBtn" onclick="toggleAutoRadio()" title="Auto-fill radio">∞</button>
+            </div>
+            <div class="cast-chip" id="castChip" style="display:none">
+                <span class="dlna-icon"></span>
+                <span data-dlna-label>DLNA</span>
+            </div>
+        </div>
+    </div>
+
+    <div id="panel-search" class="panel">
+        <div class="search-bar">
+            <input id="searchBox" placeholder="Search library...">
+            <div class="toolbar" id="searchChips">
+                <button class="active" data-mode="tracks" onclick="setSearchMode('tracks')">Songs</button>
+                <button data-mode="albums" onclick="setSearchMode('albums')">Albums</button>
+                <button data-mode="artists" onclick="setSearchMode('artists')">Artists</button>
+            </div>
+        </div>
+        <div id="searchResults" class="scroll"></div>
+    </div>
+
+    <div id="panel-lists" class="panel">
+        <div class="toolbar">
+            <input id="playlistName" placeholder="Playlist name">
+            <button onclick="createEmptyPlaylist()">New</button>
+            <button onclick="deleteSelectedPlaylist()">Del</button>
+        </div>
+        <div id="playlistList" class="scroll"></div>
+        <div id="playlistTracks" class="scroll"></div>
+    </div>
+
+    <div id="panel-queue" class="panel">
+        <div class="toolbar">
+            <button onclick="loadQueue()">Refresh</button>
+            <button onclick="clearQueue()">Clear</button>
+        </div>
+        <div id="queue" class="scroll"></div>
+    </div>
+
+    <div id="panel-recent" class="panel">
+        <div class="toolbar">
+            <button onclick="showTab('now')">← Back</button>
+            <button onclick="loadRecentPlays()">Refresh</button>
+            <button onclick="clearRecentPlays()">Clear</button>
+            <button onclick="openLikedMobile()">♥ Liked</button>
+        </div>
+        <div id="recentList" class="scroll"></div>
+    </div>
+
+    <div id="panel-browse" class="panel">
+        <div class="toolbar">
+            <button id="modeFolders" class="active" onclick="setLibMode('folders')">Folders</button>
+            <button id="modeAlbums" onclick="setLibMode('albums')">Albums</button>
+            <button id="modeArtists" onclick="setLibMode('artists')">Artists</button>
+        </div>
+        <div class="lib-filter-bar">
+            <input id="libFilter" type="search" placeholder="Filter this list…" oninput="onLibFilterInput()">
+        </div>
+        <div id="folderControls">
+            <div class="path">Path: <span id="currentPath">/</span></div>
+            <div class="toolbar">
+                <button type="button" onclick="goHome()" title="Back to root">←</button>
+                <button type="button" onclick="goUp()" title="Up one folder">↑</button>
+                <button type="button" class="pill accent" id="playFolderBtn" onclick="playCurrentFolder()" style="display:none" title="Play this folder">▶ Play</button>
+            </div>
+        </div>
+        <div id="libContext" class="path hidden"></div>
+        <div id="browser" class="scroll"></div>
+    </div>
+
+    <div id="panel-settings" class="panel">
+        <div class="toolbar">
+            <button onclick="showTab('now')">← Back</button>
+            <strong>Settings</strong>
+        </div>
+        <div class="settings-block">
+            <h3 class="panel-label">MPD output</h3>
+            <select id="playerSelect" onchange="changePlayer()"></select>
+        </div>
+        <div class="settings-block">
+            <h3 class="panel-label"><span class="dlna-icon"></span> DLNA cast</h3>
+            <p class="meta">Scan the network, then pick a TV or speaker. Cast from the blue icon on Now Playing.</p>
+            <label class="meta">Public base URL</label>
+            <input id="dlnaPublicBase" placeholder="http://192.168.9.232:5000" style="width:100%;margin:6px 0">
+            <div class="toolbar">
+                <button onclick="saveDlnaPublicBase()">Save URL</button>
+                <button class="pill accent" onclick="scanDlnaDevices()">Scan</button>
+                <button onclick="clearDlnaTarget()">Clear</button>
+            </div>
+            <div class="meta" style="margin:8px 0">Target: <span data-dlna-label>No DLNA target</span></div>
+            <div id="dlnaDeviceList" class="dlna-mobile-list"></div>
+            <div class="meta" id="dlnaMsg"></div>
+        </div>
+        <div class="settings-block">
+            <h3 class="panel-label">Playback</h3>
+            <p class="meta">Crossfade blends tracks. MixRamp helps gapless-style overlaps.</p>
+            <label class="meta">Crossfade (seconds)</label>
+            <input id="xfadeSeconds" type="number" min="0" max="30" step="1" value="0" style="width:100%;margin:6px 0">
+            <label class="meta"><input type="checkbox" id="mixrampEnabled"> Enable MixRamp</label>
+            <label class="meta">MixRamp dB</label>
+            <input id="mixrampDb" type="number" step="1" value="-17" style="width:100%;margin:6px 0">
+            <div class="toolbar">
+                <button class="pill accent" onclick="savePlaybackSettings()">Save playback</button>
+            </div>
+            <div class="meta" id="playbackMsg"></div>
+        </div>
+        <div class="settings-block">
+            <h3 class="panel-label">Display</h3>
+            <div class="toolbar">
+                <button onclick="toggleMobileTheme()">Theme</button>
+                <button type="button" id="coverToggleBtn" onclick="toggleMobileCovers()">Cover</button>
+                <button onclick="loadMobileRecent(); showTab('recent')">Recent</button>
+                <button onclick="openMobileLiked()">Liked</button>
+            </div>
+            <p class="meta" id="coverToggleHint">Cover art on</p>
+        </div>
+    </div>
+
+    <nav class="tabbar" id="tabbar">
+        <button class="active" data-tab="now" onclick="showTab('now')">Now</button>
+        <button data-tab="browse" onclick="showTab('browse')">Browse</button>
+        <button data-tab="search" onclick="showTab('search')">Search</button>
+        <button data-tab="queue" onclick="showTab('queue')">Queue</button>
+        <button data-tab="lists" onclick="showTab('lists')">Lists</button>
+    </nav>
+
+    <p class="footer-link"><a href="/?desktop=1" onclick="localStorage.setItem('mpd-prefer-desktop','1')">Desktop view &rarr;</a></p>
+
+    <div id="playlistPopover" class="playlist-popover">
+        <div class="popover-head">
+            <span>Add to playlist</span>
+            <button type="button" class="popover-close" onclick="closePlaylistPopover()">✕</button>
+        </div>
+        <div id="playlistPopoverList" class="popover-list"></div>
+        <div class="popover-new">
+            <input id="playlistPopoverNew" placeholder="New playlist name">
+            <button type="button" onclick="createAndAddToPlaylist()">Create &amp; add</button>
+        </div>
+    </div>
+
+    <script src="/static/js/api.js"></script>
+    <script src="/static/js/utils.js"></script>
+    <script src="/static/js/playlists.js"></script>
+    <script src="/static/js/dlna.js"></script>
+    <script src="/static/js/shortcuts.js"></script>
+    <script src="/static/js/sleeptimer.js"></script>
+    <script src="/static/js/browserout.js"></script>
+    <script src="/static/js/settings.js?v=5"></script>
+    <script src="/static/mobile/app.js"></script>
+</body>
+</html>
