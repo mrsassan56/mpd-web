@@ -10,6 +10,16 @@ Control your hi‑fi / streamer from a phone or desktop browser on your local ne
 | Desktop | `http://<host>:5000/` |
 | Mobile | `http://<host>:5000/m` |
 
+## Screenshots
+
+### Desktop
+
+![Desktop Now Playing](docs/desktop.jpg)
+
+### Mobile
+
+![Mobile Now Playing](docs/mobile.jpg)
+
 ---
 
 ## Features
