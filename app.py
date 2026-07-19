@@ -1,6 +1,7 @@
 from flask import Flask, jsonify, request, Response, send_from_directory, redirect
 from mpd import MPDClient
 import os
+import re
 import random
 import json
 import ssl
@@ -64,6 +65,11 @@ _lib_cache = {}
 _lib_cache_lock = threading.Lock()
 LIB_CACHE_TTL = 90
 
+# Disk library index when MPD is offline (music_root walk).
+_disk_lib = {"ts": 0.0, "root": "", "tracks": None, "artists": None, "albums": None}
+_disk_lib_lock = threading.Lock()
+DISK_LIB_TTL = 300
+
 
 def lib_cache_key(*parts):
     player = active_player()
@@ -90,6 +96,11 @@ def lib_cache_set(key, value):
 def lib_cache_clear():
     with _lib_cache_lock:
         _lib_cache.clear()
+    with _disk_lib_lock:
+        _disk_lib["ts"] = 0.0
+        _disk_lib["tracks"] = None
+        _disk_lib["artists"] = None
+        _disk_lib["albums"] = None
 
 
 def normalize_player_entry(info):
@@ -231,25 +242,590 @@ def get_mpd(timeout=10):
     return client
 
 
+def _mpd_error_message(exc):
+    msg = str(exc) or exc.__class__.__name__
+    low = msg.lower()
+    if "timed out" in low or "timeout" in low:
+        return "MPD connection timed out — player may be busy or unreachable"
+    if any(s in low for s in ("connection refused", "nodename", "name or service",
+                              "network is unreachable", "no route to host",
+                              "errno 61", "errno 111", "errno 113")):
+        return "MPD player is offline or unreachable"
+    return msg
+
+
 def with_mpd(fn, timeout=10):
-    client = get_mpd(timeout=timeout)
+    client = None
     try:
-        return fn(client)
+        client = get_mpd(timeout=timeout)
+        result = fn(client)
+        clear_mpd_down()
+        return result
     except Exception as e:
+        mark_mpd_down()
         # Always return JSON for API routes — never leak the Werkzeug HTML debugger.
         if request.path.startswith("/api/"):
-            msg = str(e) or e.__class__.__name__
-            if "timed out" in msg.lower() or "timeout" in msg.lower():
-                msg = "MPD connection timed out — player may be busy or unreachable"
-            return jsonify({"ok": False, "error": msg}), 500
+            return jsonify({"ok": False, "error": _mpd_error_message(e)}), 500
         raise
     finally:
-        try:
-            client.close()
-            client.disconnect()
-        except Exception:
-            pass
+        if client is not None:
+            try:
+                client.close()
+                client.disconnect()
+            except Exception:
+                pass
 
+
+_mpd_down_until = 0.0
+_mpd_down_lock = threading.Lock()
+MPD_DOWN_TTL = 45
+
+
+def mark_mpd_down():
+    global _mpd_down_until
+    with _mpd_down_lock:
+        _mpd_down_until = time.time() + MPD_DOWN_TTL
+
+
+def is_mpd_marked_down():
+    with _mpd_down_lock:
+        return time.time() < _mpd_down_until
+
+
+def clear_mpd_down():
+    global _mpd_down_until
+    with _mpd_down_lock:
+        _mpd_down_until = 0.0
+
+
+def with_mpd_or(fn, fallback, timeout=10, connect_timeout=2):
+    """Run fn(client) when MPD is up; otherwise use fallback() (e.g. disk library).
+
+    connect_timeout stays short so offline players fall back to disk quickly.
+    After a failure, skip MPD for a short period to keep browse snappy.
+    """
+    if is_mpd_marked_down():
+        try:
+            return fallback()
+        except Exception as e2:
+            if request.path.startswith("/api/"):
+                return jsonify({"ok": False, "error": _mpd_error_message(e2)}), 500
+            raise
+
+    client = None
+    try:
+        client = get_mpd(timeout=connect_timeout)
+        if timeout != connect_timeout:
+            client.timeout = timeout
+        result = fn(client)
+        clear_mpd_down()
+        return result
+    except Exception:
+        mark_mpd_down()
+        try:
+            return fallback()
+        except Exception as e2:
+            if request.path.startswith("/api/"):
+                return jsonify({"ok": False, "error": _mpd_error_message(e2)}), 500
+            raise
+    finally:
+        if client is not None:
+            try:
+                client.close()
+                client.disconnect()
+            except Exception:
+                pass
+
+
+# Audio extensions for disk browse when MPD is offline (browser / music_root).
+AUDIO_EXTS = {
+    ".flac", ".mp3", ".wav", ".wave", ".aiff", ".aif",
+    ".m4a", ".aac", ".ogg", ".opus", ".dsf", ".dff", ".wv", ".ape",
+}
+
+
+def music_root_abs():
+    root = active_player().get("music_root")
+    if not root:
+        return None
+    try:
+        return os.path.realpath(root)
+    except Exception:
+        return None
+
+
+def resolve_music_dir(rel_path):
+    """Resolve an MPD-relative directory under music_root. Returns (abs_path, err)."""
+    root = music_root_abs()
+    if not root:
+        return None, "music_root not configured for this player"
+    rel = (rel_path or "").lstrip("/")
+    full = os.path.realpath(os.path.join(root, rel)) if rel else root
+    if full != root and not full.startswith(root + os.sep):
+        return None, "invalid path"
+    if not os.path.isdir(full):
+        return None, "directory not found on disk"
+    return full, None
+
+
+def is_audio_filename(name):
+    return os.path.splitext(name or "")[1].lower() in AUDIO_EXTS
+
+
+def clean_release_name(name):
+    """Strip format tags and year suffixes from folder names."""
+    name = (name or "").strip()
+    name = re.sub(r"\s*\[[^\]]*\]\s*$", "", name).strip()
+    name = re.sub(r"\s*\((?:19|20)\d{2}\)\s*$", "", name).strip()
+    return name
+
+
+def parse_artist_album_folder(folder_name):
+    """Parse 'Artist - Album (year) [spec]' style folder names."""
+    cleaned = clean_release_name(folder_name)
+    if " - " in cleaned:
+        artist, album = cleaned.split(" - ", 1)
+        artist = artist.strip()
+        album = album.strip()
+        if artist and album:
+            return artist, album
+    return "", cleaned or (folder_name or "").strip()
+
+
+def infer_tags_from_path(rel_file):
+    """Guess artist/album/title from a relative library path."""
+    parts = [p for p in (rel_file or "").replace("\\", "/").split("/") if p]
+    if not parts:
+        return {"artist": "", "album": "", "title": "", "albumartist": ""}
+    filename = parts[-1]
+    title = os.path.splitext(filename)[0]
+    title = re.sub(r"^\d{1,3}\s*[.\-_)\s]+", "", title).strip() or title
+    dirs = parts[:-1]
+    album_dir = dirs[-1] if dirs else ""
+    parsed_artist, parsed_album = parse_artist_album_folder(album_dir)
+
+    if len(dirs) >= 3:
+        # Category/Artist/Album/file
+        artist = dirs[-2]
+        album = clean_release_name(album_dir) or album_dir
+    elif len(dirs) == 2 and parsed_artist:
+        # Category/Artist - Album/file
+        artist = parsed_artist
+        album = parsed_album
+    elif len(dirs) >= 2:
+        artist = dirs[-2]
+        album = clean_release_name(album_dir) or album_dir
+    else:
+        artist = parsed_artist
+        album = parsed_album or album_dir
+
+    return {
+        "artist": artist,
+        "album": album,
+        "albumartist": artist,
+        "title": title,
+    }
+
+
+def browse_from_disk(path=""):
+    full, err = resolve_music_dir(path)
+    if err:
+        raise RuntimeError(err)
+    root = music_root_abs()
+    items = []
+    try:
+        entries = sorted(os.listdir(full), key=lambda s: s.lower())
+    except Exception as e:
+        raise RuntimeError(str(e) or "Cannot read music folder")
+
+    for name in entries:
+        if name.startswith("."):
+            continue
+        abs_path = os.path.join(full, name)
+        rel = os.path.relpath(abs_path, root).replace("\\", "/")
+        if os.path.isdir(abs_path):
+            items.append({"type": "directory", "name": name, "path": rel})
+        elif os.path.isfile(abs_path) and is_audio_filename(name):
+            tags = infer_tags_from_path(rel)
+            items.append({
+                "type": "file",
+                "name": name,
+                "path": rel,
+                "title": tags.get("title", ""),
+                "artist": tags.get("artist", ""),
+                "album": tags.get("album", ""),
+                "duration": "",
+            })
+    return items
+
+
+def list_folder_tracks_from_disk(path, limit=500):
+    full, err = resolve_music_dir(path)
+    if err:
+        raise RuntimeError(err)
+    root = music_root_abs()
+    tracks = []
+    for dirpath, _dirnames, filenames in os.walk(full):
+        filenames = sorted(filenames, key=lambda s: s.lower())
+        for name in filenames:
+            if not is_audio_filename(name):
+                continue
+            abs_path = os.path.join(dirpath, name)
+            rel = os.path.relpath(abs_path, root).replace("\\", "/")
+            tags = infer_tags_from_path(rel)
+            tracks.append({
+                "file": rel,
+                "title": tags.get("title", ""),
+                "artist": tags.get("artist", ""),
+                "album": tags.get("album", ""),
+                "albumartist": tags.get("albumartist", ""),
+            })
+            if len(tracks) >= limit:
+                return tracks
+    return tracks
+
+
+def build_disk_library_index():
+    """Build artist/album lists from folder structure (fast — scandir, no file walk)."""
+    root = music_root_abs()
+    if not root or not os.path.isdir(root):
+        return {"tracks": [], "artists": [], "albums": []}
+
+    artists = set()
+    albums = {}
+    skip_top = {"system volume information", "3tb", "lost+found", "$recycle.bin"}
+
+    try:
+        top_entries = os.listdir(root)
+    except Exception:
+        return {"tracks": [], "artists": [], "albums": []}
+
+    for top in top_entries:
+        if top.startswith(".") or top.lower() in skip_top:
+            continue
+        top_path = os.path.join(root, top)
+        if not os.path.isdir(top_path):
+            continue
+
+        try:
+            mid_entries = os.listdir(top_path)
+        except Exception:
+            continue
+
+        for mid in mid_entries:
+            if mid.startswith("."):
+                continue
+            mid_path = os.path.join(top_path, mid)
+            if not os.path.isdir(mid_path):
+                continue
+
+            has_subdir = False
+            has_audio = False
+            subdirs = []
+            try:
+                with os.scandir(mid_path) as it:
+                    for ent in it:
+                        if ent.name.startswith("."):
+                            continue
+                        try:
+                            if ent.is_dir(follow_symlinks=False):
+                                has_subdir = True
+                                subdirs.append(ent.name)
+                            elif ent.is_file(follow_symlinks=False) and is_audio_filename(ent.name):
+                                has_audio = True
+                        except Exception:
+                            pass
+            except Exception:
+                continue
+
+            if has_subdir and not has_audio:
+                # Category/Artist/Album...
+                artists.add(mid)
+                for album_dir in subdirs:
+                    album_name = clean_release_name(album_dir) or album_dir
+                    key = (album_name.lower(), mid.lower())
+                    if key not in albums:
+                        albums[key] = {"album": album_name, "albumartist": mid}
+            elif has_subdir:
+                artists.add(mid)
+                for album_dir in subdirs:
+                    album_name = clean_release_name(album_dir) or album_dir
+                    key = (album_name.lower(), mid.lower())
+                    if key not in albums:
+                        albums[key] = {"album": album_name, "albumartist": mid}
+            else:
+                # Category/Artist - Album/ (tracks directly in folder)
+                parsed_artist, parsed_album = parse_artist_album_folder(mid)
+                if parsed_artist:
+                    artists.add(parsed_artist)
+                    key = (parsed_album.lower(), parsed_artist.lower())
+                    if key not in albums:
+                        albums[key] = {"album": parsed_album, "albumartist": parsed_artist}
+                elif has_audio:
+                    album_name = clean_release_name(mid) or mid
+                    key = (album_name.lower(), top.lower())
+                    if key not in albums:
+                        albums[key] = {"album": album_name, "albumartist": top}
+
+    artist_list = sorted(artists, key=str.lower)
+    album_list = sorted(
+        albums.values(),
+        key=lambda a: ((a.get("albumartist") or "").lower(), (a.get("album") or "").lower()),
+    )
+    return {"tracks": [], "artists": artist_list, "albums": album_list}
+
+
+def get_disk_library(force=False):
+    root = music_root_abs() or ""
+    now = time.time()
+    with _disk_lib_lock:
+        fresh = (
+            not force
+            and _disk_lib["artists"] is not None
+            and _disk_lib["root"] == root
+            and (now - _disk_lib["ts"]) < DISK_LIB_TTL
+        )
+        if fresh:
+            return {
+                "tracks": _disk_lib["tracks"] or [],
+                "artists": _disk_lib["artists"],
+                "albums": _disk_lib["albums"],
+            }
+
+    built = build_disk_library_index()
+    with _disk_lib_lock:
+        _disk_lib["ts"] = time.time()
+        _disk_lib["root"] = root
+        _disk_lib["tracks"] = built["tracks"]
+        _disk_lib["artists"] = built["artists"]
+        _disk_lib["albums"] = built["albums"]
+    return built
+
+
+def disk_album_tracks(album, albumartist=""):
+    """Find tracks for an album by scanning likely folders under music_root."""
+    album = (album or "").strip()
+    albumartist = (albumartist or "").strip()
+    if not album:
+        return []
+    root = music_root_abs()
+    if not root:
+        return []
+
+    album_l = album.lower()
+    aa_l = albumartist.lower()
+    scored_dirs = []  # (score, path)
+
+    def folder_matches(base, rel_dir):
+        cleaned = clean_release_name(base).lower()
+        parsed_artist, parsed_album = parse_artist_album_folder(base)
+        exact = (
+            cleaned == album_l
+            or parsed_album.lower() == album_l
+            or base.lower() == album_l
+        )
+        soft = (not exact) and (album_l in cleaned or cleaned in album_l)
+        if not exact and not soft:
+            return 0
+        if aa_l:
+            parent = os.path.basename(os.path.dirname(os.path.join(root, rel_dir))) if rel_dir else ""
+            artist_ok = (
+                parent.lower() == aa_l
+                or parsed_artist.lower() == aa_l
+                or aa_l in (rel_dir or "").lower()
+            )
+            if not artist_ok:
+                return 0
+        return 2 if exact else 1
+
+    # Fast path: look under Category/<albumartist>/ first.
+    try:
+        tops = os.listdir(root)
+    except Exception:
+        tops = []
+
+    for top in tops:
+        if top.startswith(".") or top.lower() in ("3tb", "lost+found", "system volume information"):
+            continue
+        top_path = os.path.join(root, top)
+        if not os.path.isdir(top_path):
+            continue
+
+        search_mids = []
+        if aa_l:
+            exact = os.path.join(top_path, albumartist)
+            if os.path.isdir(exact):
+                search_mids.append((albumartist, exact))
+            else:
+                try:
+                    for mid in os.listdir(top_path):
+                        if mid.lower() == aa_l and os.path.isdir(os.path.join(top_path, mid)):
+                            search_mids.append((mid, os.path.join(top_path, mid)))
+                            break
+                except Exception:
+                    pass
+        else:
+            search_mids.append(("", top_path))
+
+        for mid_name, mid_path in search_mids:
+            try:
+                with os.scandir(mid_path) as it:
+                    for ent in it:
+                        if ent.name.startswith(".") or not ent.is_dir(follow_symlinks=False):
+                            continue
+                        rel = os.path.relpath(ent.path, root).replace("\\", "/")
+                        score = folder_matches(ent.name, rel)
+                        if score:
+                            scored_dirs.append((score, ent.path))
+                rel_mid = os.path.relpath(mid_path, root).replace("\\", "/")
+                score = folder_matches(mid_name or os.path.basename(mid_path), rel_mid)
+                if score:
+                    scored_dirs.append((score, mid_path))
+            except Exception:
+                pass
+
+        if not scored_dirs and not aa_l:
+            try:
+                with os.scandir(top_path) as it:
+                    for ent in it:
+                        if not ent.is_dir(follow_symlinks=False):
+                            continue
+                        rel = os.path.join(top, ent.name)
+                        score = folder_matches(ent.name, rel)
+                        if score:
+                            scored_dirs.append((score, ent.path))
+            except Exception:
+                pass
+
+    if not scored_dirs:
+        for dirpath, dirnames, _filenames in os.walk(root):
+            rel_dir = os.path.relpath(dirpath, root).replace("\\", "/")
+            top = rel_dir.split("/", 1)[0] if rel_dir != "." else ""
+            if top.lower() in ("3tb", "lost+found", "system volume information"):
+                dirnames[:] = []
+                continue
+            depth = 0 if rel_dir == "." else rel_dir.count("/") + 1
+            if depth > 4:
+                dirnames[:] = []
+                continue
+            base = os.path.basename(dirpath)
+            score = folder_matches(base, "" if rel_dir == "." else rel_dir)
+            if score:
+                scored_dirs.append((score, dirpath))
+                dirnames[:] = []
+            if len(scored_dirs) >= 5:
+                break
+
+    scored_dirs.sort(key=lambda x: -x[0])
+    candidate_dirs = []
+    seen_dirs = set()
+    for score, path in scored_dirs:
+        if path in seen_dirs:
+            continue
+        seen_dirs.add(path)
+        candidate_dirs.append(path)
+        if score >= 2:
+            break
+        if len(candidate_dirs) >= 3:
+            break
+
+    matches = []
+    seen = set()
+    for folder in candidate_dirs:
+        folder_matches_list = []
+        for dirpath, _dns, filenames in os.walk(folder):
+            for name in sorted(filenames, key=lambda s: s.lower()):
+                if not is_audio_filename(name):
+                    continue
+                abs_path = os.path.join(dirpath, name)
+                rel = os.path.relpath(abs_path, root).replace("\\", "/")
+                if rel in seen:
+                    continue
+                seen.add(rel)
+                tags = infer_tags_from_path(rel)
+                folder_matches_list.append({
+                    "file": rel,
+                    "title": tags.get("title", ""),
+                    "artist": tags.get("artist", "") or albumartist,
+                    "album": tags.get("album", "") or album,
+                    "track": "",
+                    "duration": "",
+                })
+        if folder_matches_list:
+            matches = folder_matches_list
+            break
+
+    matches.sort(key=lambda x: (x.get("file") or "").lower())
+    return matches
+
+
+def disk_search_tracks(query, search_type="any"):
+    """Offline search using the folder index (no full-library walk)."""
+    fields, free = parse_search_query(query)
+    q = (free or query or "").strip().lower()
+    if not q and not fields:
+        return []
+
+    lib = get_disk_library()
+    hits = []
+    seen = set()
+
+    album_hits = []
+    for a in lib.get("albums") or []:
+        album = a.get("album") or ""
+        aa = a.get("albumartist") or ""
+        blob = (album + " " + aa).lower()
+        if q and q not in blob:
+            continue
+        album_hits.append(a)
+        if len(album_hits) >= 30:
+            break
+
+    for a in album_hits:
+        album = a.get("album") or ""
+        aa = a.get("albumartist") or ""
+        for t in disk_album_tracks(album, aa)[:25]:
+            f = t.get("file")
+            if not f or f in seen:
+                continue
+            seen.add(f)
+            hits.append({
+                "file": f,
+                "title": t.get("title", ""),
+                "artist": t.get("artist", "") or aa,
+                "album": t.get("album", "") or album,
+                "albumartist": aa,
+                "genre": "",
+                "date": "",
+                "duration": "",
+            })
+            if len(hits) >= 100:
+                break
+        if len(hits) >= 100:
+            break
+
+    clean = []
+    for track in hits:
+        sc = score_track(track, query, fields, free)
+        if sc < 0:
+            path_l = (track.get("file") or "").lower()
+            if free and free.lower() in path_l:
+                sc = 15
+            elif q and q in path_l:
+                sc = 12
+            else:
+                continue
+        if search_type in ("artist", "album", "title", "genre"):
+            val = (track.get(search_type) or "").lower()
+            if query.lower() not in val and query.lower() not in (track.get("file") or "").lower():
+                continue
+        item = dict(track)
+        item["_score"] = sc
+        clean.append(item)
+    clean.sort(key=lambda x: x.get("_score", 0), reverse=True)
+    for t in clean:
+        t.pop("_score", None)
+    return clean
 
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
@@ -492,6 +1068,7 @@ def set_player_api():
     current_player = key
     info = PLAYERS[key]
     lib_cache_clear()
+    clear_mpd_down()
 
     return jsonify({"ok": True, "current": key, "name": info.get("name", key)})
 
@@ -893,7 +1470,12 @@ def browse_api():
         lib_cache_set(cache_key, items)
         return jsonify(items)
 
-    return with_mpd(run)
+    def fallback():
+        items = browse_from_disk(path)
+        lib_cache_set(cache_key, items)
+        return jsonify(items)
+
+    return with_mpd_or(run, fallback)
 
 
 def parse_search_query(query):
@@ -1100,7 +1682,57 @@ def search_api():
             "results": tracks[offset:offset + limit],
         })
 
-    return with_mpd(run)
+    def fallback():
+        if mode == "albums":
+            tracks = disk_search_tracks(query, search_type)
+            albums = {}
+            for t in tracks:
+                key = (t.get("album", ""), t.get("albumartist") or t.get("artist", ""))
+                if not key[0]:
+                    continue
+                if key not in albums:
+                    albums[key] = {
+                        "album": key[0],
+                        "albumartist": key[1],
+                        "track_count": 0,
+                        "year": t.get("date", ""),
+                    }
+                albums[key]["track_count"] += 1
+            results = sorted(albums.values(), key=lambda a: a["album"].lower())
+            total = len(results)
+            return jsonify({
+                "mode": "albums",
+                "total": total,
+                "results": results[offset:offset + limit],
+            })
+
+        if mode == "artists":
+            tracks = disk_search_tracks(query, search_type)
+            artists = {}
+            for t in tracks:
+                name = (t.get("artist") or "").strip()
+                if not name:
+                    continue
+                if name not in artists:
+                    artists[name] = {"artist": name, "track_count": 0}
+                artists[name]["track_count"] += 1
+            results = sorted(artists.values(), key=lambda a: a["artist"].lower())
+            total = len(results)
+            return jsonify({
+                "mode": "artists",
+                "total": total,
+                "results": results[offset:offset + limit],
+            })
+
+        tracks = disk_search_tracks(query, search_type)
+        total = len(tracks)
+        return jsonify({
+            "mode": "tracks",
+            "total": total,
+            "results": tracks[offset:offset + limit],
+        })
+
+    return with_mpd_or(run, fallback, timeout=15)
 
 @app.route("/api/add", methods=["POST"])
 def add_api():
@@ -1149,7 +1781,11 @@ def folder_tracks_api():
         tracks = list_folder_tracks(client, path, limit=limit)
         return jsonify({"ok": True, "tracks": tracks, "total": len(tracks)})
 
-    return with_mpd(run, timeout=30)
+    def fallback():
+        tracks = list_folder_tracks_from_disk(path, limit=limit)
+        return jsonify({"ok": True, "tracks": tracks, "total": len(tracks), "source": "disk"})
+
+    return with_mpd_or(run, fallback, timeout=30)
 
 
 @app.route("/api/queue")
@@ -1509,6 +2145,298 @@ def local_similar_tracks(client, seed, count, in_queue):
     return chosen
 
 
+def seed_from_disk(seed_file):
+    """Build a seed song dict from a library path (no MPD)."""
+    seed_file = (seed_file or "").strip()
+    if not seed_file:
+        return {}
+    tags = infer_tags_from_path(seed_file)
+    # Prefer metadata from recent plays when available.
+    try:
+        for item in load_recent_plays():
+            if isinstance(item, dict) and item.get("file") == seed_file:
+                return {
+                    "file": seed_file,
+                    "title": item.get("title") or tags.get("title", ""),
+                    "artist": item.get("artist") or tags.get("artist", ""),
+                    "album": item.get("album") or tags.get("album", ""),
+                    "albumartist": item.get("albumartist") or tags.get("albumartist", ""),
+                    "genre": item.get("genre") or "",
+                    "date": item.get("date") or "",
+                }
+    except Exception:
+        pass
+    return {
+        "file": seed_file,
+        "title": tags.get("title", ""),
+        "artist": tags.get("artist", ""),
+        "album": tags.get("album", ""),
+        "albumartist": tags.get("albumartist", ""),
+        "genre": "",
+        "date": "",
+    }
+
+
+def folder_neighbor_tracks_from_disk(seed_file, in_queue, limit=80):
+    """Other tracks near the seed path on disk."""
+    if not seed_file or "/" not in seed_file:
+        return []
+    parts = seed_file.split("/")
+    pool = []
+    seen = set()
+    for depth in range(len(parts) - 1, max(-1, len(parts) - 4), -1):
+        folder = "/".join(parts[:depth]) if depth > 0 else ""
+        try:
+            tracks = list_folder_tracks_from_disk(folder, limit=max(limit * 2, 40))
+        except Exception:
+            continue
+        for item in tracks:
+            f = item.get("file", "")
+            if not f or f in seen or f in in_queue or f == seed_file:
+                continue
+            seen.add(f)
+            pool.append(item)
+            if len(pool) >= limit:
+                return pool
+    return pool
+
+
+def disk_tracks_for_artist(artist_name, limit=80):
+    """Collect tracks for an artist from the disk album index."""
+    artist_name = (artist_name or "").strip()
+    if not artist_name:
+        return []
+    lib = get_disk_library()
+    al = artist_name.lower()
+    out = []
+    seen = set()
+    album_hits = []
+    for a in lib.get("albums") or []:
+        aa = (a.get("albumartist") or "").strip()
+        aa_l = aa.lower()
+        if aa_l == al or al in aa_l or aa_l in al:
+            album_hits.append(a)
+    # Prefer exact albumartist matches first.
+    album_hits.sort(key=lambda a: 0 if (a.get("albumartist") or "").lower() == al else 1)
+
+    for a in album_hits[:20]:
+        aa = a.get("albumartist") or artist_name
+        for t in disk_album_tracks(a.get("album") or "", aa)[:30]:
+            f = t.get("file")
+            if not f or f in seen:
+                continue
+            seen.add(f)
+            out.append({
+                "file": f,
+                "title": t.get("title", ""),
+                "artist": t.get("artist", "") or aa,
+                "album": t.get("album", "") or a.get("album", ""),
+                "albumartist": aa,
+                "genre": "",
+                "date": "",
+            })
+            if len(out) >= limit:
+                return out
+    return out
+
+
+def local_similar_tracks_from_disk(seed, count, in_queue):
+    """Disk-only similar/radio pool (browser mode when MPD is offline)."""
+    seed_file = seed.get("file", "")
+    seed_artist = (seed.get("artist") or "").strip()
+    seed_albumartist = (seed.get("albumartist") or seed_artist).strip()
+
+    seen = set()
+    pool = []
+
+    for artist in (seed_albumartist, seed_artist):
+        if not artist:
+            continue
+        for t in disk_tracks_for_artist(artist, limit=count * 8):
+            f = t.get("file", "")
+            if not f or f in seen or f in in_queue or f == seed_file:
+                continue
+            seen.add(f)
+            pool.append(t)
+
+    if len(pool) < count:
+        for t in folder_neighbor_tracks_from_disk(seed_file, in_queue, limit=count * 10):
+            f = t.get("file", "")
+            if not f or f in seen or f in in_queue or f == seed_file:
+                continue
+            seen.add(f)
+            pool.append(t)
+
+    # Broaden to other folders in the same top-level category.
+    if len(pool) < count and seed_file and "/" in seed_file:
+        top = seed_file.split("/")[0]
+        try:
+            items = browse_from_disk(top)
+            dirs = [i for i in items if i.get("type") == "directory"]
+            random.shuffle(dirs)
+            for d in dirs[:10]:
+                try:
+                    tracks = list_folder_tracks_from_disk(d.get("path") or "", limit=25)
+                except Exception:
+                    continue
+                for t in tracks:
+                    f = t.get("file", "")
+                    if not f or f in seen or f in in_queue or f == seed_file:
+                        continue
+                    seen.add(f)
+                    pool.append(t)
+                    if len(pool) >= count * 5:
+                        break
+                if len(pool) >= count * 5:
+                    break
+        except Exception:
+            pass
+
+    if not pool:
+        return []
+
+    pool.sort(key=lambda t: score_similar_track(t, seed), reverse=True)
+    chosen = pick_varied(pool, count, max_per_artist=2, max_per_album=1)
+    if not chosen and pool:
+        chosen = pool[:count]
+    return chosen
+
+
+def match_disk_artists(names, limit=20):
+    """Map online similar-artist names to artists present on disk."""
+    lib = get_disk_library()
+    artist_set = {a.lower(): a for a in (lib.get("artists") or [])}
+    matched = []
+    seen = set()
+    for name in names or []:
+        name = (name or "").strip()
+        if not name:
+            continue
+        key = name.lower()
+        hit = None
+        if key in artist_set:
+            hit = artist_set[key]
+        else:
+            for al, orig in artist_set.items():
+                if key in al or al in key:
+                    hit = orig
+                    break
+        if hit and hit.lower() not in seen:
+            seen.add(hit.lower())
+            matched.append(hit)
+            if len(matched) >= limit:
+                break
+    return matched
+
+
+def _queue_radio_tracks_disk(seed, count, in_queue, mode):
+    """Smart/local radio picking using disk library (+ ListenBrainz for smart)."""
+    seed_artist = (seed.get("artist") or "").strip()
+    seed_file = seed.get("file", "")
+
+    if mode == "smart":
+        debug = {"source": "disk"}
+        matched_artists = []
+        if seed_artist:
+            mbid = musicbrainz_artist_mbid(seed_artist, debug)
+            similar_names = listenbrainz_similar_artists(mbid, debug)
+            matched_artists = match_disk_artists(similar_names, limit=20)
+        debug["library_matches"] = len(matched_artists)
+
+        chosen = []
+        source = "listenbrainz"
+        if matched_artists:
+            tracks = []
+            for artist in matched_artists:
+                for item in disk_tracks_for_artist(artist, limit=40):
+                    f = item.get("file", "")
+                    if not f or f in in_queue or f == seed_file:
+                        continue
+                    tracks.append(item)
+                if len(tracks) >= count * 6:
+                    break
+            tracks.sort(key=lambda t: score_similar_track(t, seed), reverse=True)
+            chosen = pick_varied(tracks, count, max_per_artist=2, max_per_album=1)
+            if not chosen and tracks:
+                chosen = tracks[:count]
+
+        if not chosen:
+            source = "local-disk"
+            chosen = local_similar_tracks_from_disk(seed, count, in_queue)
+        return chosen, source, debug, matched_artists[:10]
+
+    chosen = local_similar_tracks_from_disk(seed, count, in_queue)
+    return chosen, "local-disk", {"source": "disk"}, []
+
+
+def browser_radio_fallback(seed_file, exclude, count, mode="local"):
+    """Shared browser-mode response when MPD is offline."""
+    seed = seed_from_disk(seed_file)
+    if not seed.get("file"):
+        return jsonify({
+            "ok": False,
+            "error": "Nothing playing to seed radio — play a track first"
+        }), 400
+
+    in_queue = set(str(x) for x in (exclude or []) if x)
+    in_queue.add(seed["file"])
+
+    if mode == "similar":
+        chosen = local_similar_tracks_from_disk(seed, count, in_queue)
+        source = "local-disk"
+        debug = {"source": "disk"}
+        artists = []
+    else:
+        chosen, source, debug, artists = _queue_radio_tracks_disk(
+            seed, count, in_queue, mode
+        )
+
+    if not chosen:
+        return jsonify({
+            "ok": False,
+            "error": "No matching tracks found on disk for this seed"
+        }), 404
+
+    tracks = [t for t in (track_payload(x) for x in chosen) if t]
+    return jsonify({
+        "ok": True,
+        "added": len(tracks),
+        "tracks": tracks,
+        "source": source,
+        "mode": mode,
+        "browser": True,
+        "seed_artist": (seed.get("artist") or "").strip(),
+        "seed_title": (seed.get("title") or "").strip(),
+        "artists": artists,
+        "debug": debug,
+    })
+    """Returns (data, error_string). error_string is None on success."""
+    req = urllib.request.Request(
+        url, headers={"User-Agent": SMART_RADIO_USER_AGENT}
+    )
+
+    def attempt(context=None):
+        with urllib.request.urlopen(req, timeout=timeout, context=context) as resp:
+            return json.loads(resp.read().decode("utf-8", "replace"))
+
+    try:
+        return attempt(), None
+    except urllib.error.HTTPError as e:
+        return None, "HTTP %s" % e.code
+    except urllib.error.URLError as e:
+        reason = str(getattr(e, "reason", e))
+        # Common on older Raspberry Pi installs: outdated CA store. Retry once
+        # without certificate verification (these are public read-only APIs).
+        if "SSL" in reason.upper() or "CERTIFICATE" in reason.upper():
+            try:
+                return attempt(context=ssl._create_unverified_context()), None
+            except Exception as e2:
+                return None, "SSL retry failed: %s" % e2
+        return None, "Network error: %s" % reason
+    except Exception as e:
+        return None, "Error: %s" % e
+
+
 def _http_get_json(url, timeout=8):
     """Returns (data, error_string). error_string is None on success."""
     req = urllib.request.Request(
@@ -1652,6 +2580,16 @@ def similar_api():
             "seed_genre": (seed.get("genre") or "").strip()
         })
 
+    def fallback():
+        if not browser:
+            return jsonify({
+                "ok": False,
+                "error": "MPD player is offline or unreachable"
+            }), 503
+        return browser_radio_fallback(seed_file, exclude, count, mode="similar")
+
+    if browser:
+        return with_mpd_or(run, fallback, timeout=30)
     return with_mpd(run)
 
 
@@ -1705,6 +2643,16 @@ def smart_radio_api():
             "debug": debug
         })
 
+    def fallback():
+        if not browser:
+            return jsonify({
+                "ok": False,
+                "error": "MPD player is offline or unreachable"
+            }), 503
+        return browser_radio_fallback(seed_file, exclude, count, mode="smart")
+
+    if browser:
+        return with_mpd_or(run, fallback, timeout=60)
     return with_mpd(run, timeout=60)
 
 
@@ -1848,6 +2796,16 @@ def radio_start_api():
             "debug": debug,
         })
 
+    def fallback():
+        if not browser:
+            return jsonify({
+                "ok": False,
+                "error": "MPD player is offline or unreachable"
+            }), 503
+        return browser_radio_fallback(seed_file, exclude, count, mode=mode)
+
+    if browser:
+        return with_mpd_or(run, fallback, timeout=60)
     return with_mpd(run, timeout=60)
 
 
@@ -2243,7 +3201,14 @@ def artists_api():
     if artists is not None:
         return build_payload(artists)
 
-    return with_mpd(run)
+    def fallback():
+        nonlocal artists
+        lib = get_disk_library()
+        artists = list(lib["artists"] or [])
+        lib_cache_set(cache_key, artists)
+        return build_payload(artists)
+
+    return with_mpd_or(run, fallback, timeout=15)
 
 
 @app.route("/api/albums")
@@ -2324,7 +3289,25 @@ def albums_api():
     if unique is not None:
         return build_payload(unique)
 
-    return with_mpd(run)
+    def fallback():
+        nonlocal unique
+        lib = get_disk_library()
+        albums = list(lib["albums"] or [])
+        if artist:
+            al = artist.lower()
+            exact = [
+                a for a in albums
+                if (a.get("albumartist") or "").lower() == al
+            ]
+            albums = exact or [
+                a for a in albums
+                if al in (a.get("albumartist") or "").lower()
+            ]
+        unique = albums
+        lib_cache_set(cache_key, unique)
+        return build_payload(unique)
+
+    return with_mpd_or(run, fallback, timeout=15)
 
 
 def album_find(client, album, albumartist):
@@ -2368,7 +3351,10 @@ def album_tracks_api():
         tracks.sort(key=album_track_no)
         return jsonify(tracks)
 
-    return with_mpd(run)
+    def fallback():
+        return jsonify(disk_album_tracks(album, albumartist))
+
+    return with_mpd_or(run, fallback, timeout=15)
 
 
 @app.route("/api/addalbum", methods=["POST"])
@@ -2431,7 +3417,13 @@ def album_cover_api():
         # Prefer folder cover on disk — embedded albumart via MPD is very CPU-heavy.
         return cover_response(client, first_file, allow_mpd=False)
 
-    return with_mpd(run)
+    def fallback():
+        tracks = disk_album_tracks(album, albumartist)
+        if not tracks:
+            return Response(status=404)
+        return cover_response(None, tracks[0].get("file", ""), allow_mpd=False)
+
+    return with_mpd_or(run, fallback, timeout=15)
 
 
 @app.route("/api/update", methods=["POST"])
@@ -2665,14 +3657,16 @@ def cover_api():
     if not file_path:
         return Response(status=404)
 
+    # Disk first — works when MPD (e.g. iFi) is powered off.
+    if ensure_cover_cached(None, file_path, allow_mpd=False):
+        image_data, mime = COVER_CACHE[current_player + "::" + file_path]
+        return Response(
+            image_data,
+            mimetype=mime,
+            headers={"Cache-Control": "public, max-age=86400"}
+        )
+
     if disk_only:
-        if ensure_cover_cached(None, file_path, allow_mpd=False):
-            image_data, mime = COVER_CACHE[current_player + "::" + file_path]
-            return Response(
-                image_data,
-                mimetype=mime,
-                headers={"Cache-Control": "public, max-age=86400"}
-            )
         return Response(status=404)
 
     def run(client):

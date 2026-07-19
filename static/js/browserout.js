@@ -289,9 +289,22 @@ function onBrowserTrackEnded() {
     if (!browserOutEnabled) return;
     if (browserIndex < browserQueue.length - 1) {
         playBrowserIndex(browserIndex + 1);
-    } else {
-        updatePlayPauseButton("stop");
+        return;
     }
+    // Last track finished — ask UI to top up radio if it's active.
+    if (typeof onBrowserRadioNeedsMore === "function") {
+        Promise.resolve(onBrowserRadioNeedsMore()).then(function() {
+            if (browserIndex < browserQueue.length - 1) {
+                playBrowserIndex(browserIndex + 1);
+            } else {
+                updatePlayPauseButton("stop");
+            }
+        }).catch(function() {
+            updatePlayPauseButton("stop");
+        });
+        return;
+    }
+    updatePlayPauseButton("stop");
 }
 
 async function browserTogglePlayPause() {

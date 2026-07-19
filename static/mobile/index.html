@@ -46,9 +46,9 @@
             </div>
             <div class="mode-row">
                 <button type="button" class="now-icon-btn mode-icon" id="randomBtn" onclick="toggleRandom()" title="Shuffle">R</button>
+                <button type="button" class="now-icon-btn mode-icon radio-pill" id="radioLocalBtn" onclick="startMobileRadio('local')" title="Local radio">L</button>
+                <button type="button" class="now-icon-btn mode-icon radio-pill" id="radioSmartBtn" onclick="startMobileRadio('smart')" title="Smart radio">S</button>
                 <button type="button" class="now-icon-btn mode-icon" onclick="addSimilar()" title="Add similar">≈</button>
-                <button type="button" class="now-icon-btn mode-icon" onclick="smartRadio(event)" title="Smart radio">★</button>
-                <button type="button" class="now-icon-btn mode-icon" id="autoRadioBtn" onclick="toggleAutoRadio()" title="Auto-fill radio">∞</button>
             </div>
             <div class="cast-chip" id="castChip" style="display:none">
                 <span class="dlna-icon"></span>
@@ -196,6 +196,6 @@
     <script src="/static/js/sleeptimer.js"></script>
     <script src="/static/js/browserout.js"></script>
     <script src="/static/js/settings.js?v=5"></script>
-    <script src="/static/mobile/app.js"></script>
+    <script src="/static/mobile/app.js?v=6"></script>
 </body>
 </html>

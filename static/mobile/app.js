@@ -882,81 +882,172 @@ async function addAlbum(al, play) {
 async function addSimilar() {
     if (typeof isBrowserOutput === "function" && isBrowserOutput()) {
         try {
-            await browserRadio("similar", 10);
+            const res = await browserRadio("similar", 10);
+            if (res && res.added) {
+                if (typeof flashPlayerAction === "function") {
+                    flashPlayerAction("+" + res.added + " similar");
+                }
+            }
         } catch (e) {
             alert(e.message || String(e));
         }
         return;
     }
-    const res = await api("/api/similar", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({count: 10})
-    });
-    if (!res.added) alert("No similar tracks found.");
-    refresh();
-    loadQueue();
-}
-
-async function smartRadio(evt) {
-    if (typeof isBrowserOutput === "function" && isBrowserOutput()) {
-        const btn = evt && evt.target;
-        const prev = btn ? btn.innerText : "";
-        if (btn) { btn.disabled = true; btn.innerText = "…"; }
-        try {
-            await browserRadio("smart", 12);
-        } catch (e) {
-            alert(e.message || String(e));
-        } finally {
-            if (btn) { btn.disabled = false; btn.innerText = prev || "★"; }
-        }
-        return;
-    }
-    const btn = evt && evt.target;
-    const prev = btn ? btn.innerText : "";
-    if (btn) { btn.disabled = true; btn.innerText = "…"; }
     try {
-        const res = await api("/api/smartradio", {
+        const res = await api("/api/similar", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
             body: JSON.stringify({count: 10})
         });
-        if (!res.added) alert("No tracks added.");
+        if (!res.added) alert("No similar tracks found.");
         refresh();
         loadQueue();
-    } finally {
-        if (btn) { btn.disabled = false; btn.innerText = prev || "★"; }
+    } catch (e) {
+        alert(e.message || String(e));
     }
 }
 
+let mobileRadioMode = localStorage.getItem("mpd-radio-mode") || "local";
+let mobileBrowserRadioOn = false;
+
+function updateMobileRadioButtons() {
+    const localBtn = document.getElementById("radioLocalBtn");
+    const smartBtn = document.getElementById("radioSmartBtn");
+    const on = mobileBrowserRadioOn || false;
+    if (localBtn) {
+        localBtn.classList.toggle("active", on && mobileRadioMode === "local");
+    }
+    if (smartBtn) {
+        smartBtn.classList.toggle("active", on && mobileRadioMode === "smart");
+    }
+}
+
+async function startMobileRadio(mode) {
+    const next = mode === "smart" ? "smart" : "local";
+    const inBrowser = typeof isBrowserOutput === "function" && isBrowserOutput();
+
+    // Tap same active mode again → stop
+    if (inBrowser && mobileBrowserRadioOn && mobileRadioMode === next) {
+        mobileBrowserRadioOn = false;
+        updateMobileRadioButtons();
+        if (typeof flashPlayerAction === "function") flashPlayerAction("Radio off");
+        return;
+    }
+
+    if (!inBrowser) {
+        try {
+            const data = await api("/api/radio/status");
+            if (data.auto_radio && mobileRadioMode === next) {
+                await api("/api/radio/stop", {method: "POST"});
+                mobileRadioMode = next;
+                localStorage.setItem("mpd-radio-mode", mobileRadioMode);
+                updateMobileRadioButtons();
+                if (typeof flashPlayerAction === "function") flashPlayerAction("Radio off");
+                return;
+            }
+        } catch (e) {}
+    }
+
+    mobileRadioMode = next;
+    localStorage.setItem("mpd-radio-mode", mobileRadioMode);
+
+    const btn = document.getElementById(next === "smart" ? "radioSmartBtn" : "radioLocalBtn");
+    const prev = btn ? btn.innerText : "";
+    if (btn) { btn.disabled = true; btn.innerText = "…"; }
+
+    try {
+        if (inBrowser) {
+            const res = await browserRadio(next === "smart" ? "smart" : "local", 12);
+            if (res && res.added) {
+                mobileBrowserRadioOn = true;
+                updateMobileRadioButtons();
+                if (typeof flashPlayerAction === "function") {
+                    flashPlayerAction("Radio · +" + res.added + " · " + (res.source || next));
+                }
+            } else {
+                mobileBrowserRadioOn = false;
+                updateMobileRadioButtons();
+            }
+            return;
+        }
+
+        const res = await api("/api/radio/start", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({mode: next, count: 15, replace: false})
+        });
+        mobileBrowserRadioOn = false;
+        updateMobileRadioButtons();
+        if (typeof flashPlayerAction === "function") {
+            flashPlayerAction("Radio · +" + (res.added || 0) + " · " + (res.source || next));
+        }
+        refresh();
+        loadQueue();
+    } catch (e) {
+        // MPD offline → fall back to browser radio if a track is already queued there
+        const seed = typeof getBrowserNow === "function" ? getBrowserNow() : null;
+        if (seed && seed.file && typeof setBrowserOutput === "function") {
+            setBrowserOutput(true);
+            try {
+                const res = await browserRadio(next === "smart" ? "smart" : "local", 12);
+                if (res && res.added) {
+                    mobileBrowserRadioOn = true;
+                    updateMobileRadioButtons();
+                    if (typeof flashPlayerAction === "function") {
+                        flashPlayerAction("Radio · +" + res.added + " · " + (res.source || next));
+                    }
+                    return;
+                }
+            } catch (e2) {
+                alert(e2.message || String(e2));
+                return;
+            }
+        }
+        alert(e.message || String(e));
+    } finally {
+        if (btn) { btn.disabled = false; btn.innerText = prev || (next === "smart" ? "S" : "L"); }
+        updateMobileRadioButtons();
+    }
+}
+
+async function smartRadio(evt) {
+    await startMobileRadio("smart");
+}
+
 async function loadAutoRadio() {
+    // Legacy: keep settings panel state if present; radio is L/S on Now Playing.
     try {
         const data = await api("/api/autoradio");
-        const autoBtn = document.getElementById("autoRadioBtn");
-        if (autoBtn) autoBtn.classList.toggle("active", !!data.enabled);
         const autoState = document.getElementById("autoRadioState");
         if (autoState) autoState.innerText = data.enabled ? "On" : "Off";
+        if (!(typeof isBrowserOutput === "function" && isBrowserOutput())) {
+            mobileBrowserRadioOn = false;
+            if (data.enabled) {
+                // Reflect MPD auto-radio on the last-used mode button when possible
+                updateMobileRadioButtons();
+                const btn = document.getElementById(
+                    mobileRadioMode === "smart" ? "radioSmartBtn" : "radioLocalBtn"
+                );
+                if (btn) btn.classList.add("active");
+            } else {
+                updateMobileRadioButtons();
+            }
+        }
     } catch (e) {}
 }
 
 async function toggleAutoRadio() {
-    if (typeof isBrowserOutput === "function" && isBrowserOutput()) {
-        alert("Auto-fill uses the shared player — turn off Browser (B) first.");
-        return;
-    }
-    const autoBtn = document.getElementById("autoRadioBtn");
-    const autoState = document.getElementById("autoRadioState");
-    const isOn = autoBtn
-        ? autoBtn.classList.contains("active")
-        : (autoState && autoState.innerText === "On");
-    const data = await api("/api/autoradio", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({enabled: !isOn})
-    });
-    if (autoBtn) autoBtn.classList.toggle("active", !!data.enabled);
-    if (autoState) autoState.innerText = data.enabled ? "On" : "Off";
+    // Kept for any leftover callers — prefer L/S on the Now Playing row.
+    await startMobileRadio(mobileRadioMode === "smart" ? "smart" : "local");
 }
+
+window.onBrowserRadioNeedsMore = async function() {
+    if (!mobileBrowserRadioOn) return;
+    if (!(typeof isBrowserOutput === "function" && isBrowserOutput())) return;
+    try {
+        await browserRadio(mobileRadioMode === "smart" ? "smart" : "local", 8);
+    } catch (e) {}
+};
 
 document.getElementById("searchBox").addEventListener("input", debounce(function() {
     searchMusic(false);
