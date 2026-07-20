@@ -162,6 +162,7 @@ async function playBrowserIndex(idx) {
         album: item.album || ""
     };
     const a = getBrowserAudio();
+    a._mpdStopped = false;
     a.src = streamUrlForFile(item.file);
     a.load();
     await playBrowserMedia(a);
@@ -285,6 +286,26 @@ async function browserPlayAlbum(al) {
     return playBrowserQueue(tracks || [], 0);
 }
 
+async function browserPlayPlaylist(name, startIndex) {
+    primeBrowserAudio();
+    if (!name) return;
+    let tracks = [];
+    try {
+        const data = await apiPlaylist(name);
+        tracks = data.tracks || [];
+    } catch (e) {
+        if (typeof flashPlayerAction === "function") {
+            flashPlayerAction(e.message || "Playlist load failed");
+        }
+        return;
+    }
+    if (!tracks.length) {
+        if (typeof flashPlayerAction === "function") flashPlayerAction("Empty playlist");
+        return;
+    }
+    return playBrowserQueue(tracks, startIndex || 0);
+}
+
 function onBrowserTrackEnded() {
     if (!browserOutEnabled) return;
     if (browserIndex < browserQueue.length - 1) {
@@ -310,19 +331,38 @@ function onBrowserTrackEnded() {
 async function browserTogglePlayPause() {
     primeBrowserAudio();
     const a = getBrowserAudio();
+    // After Stop, HTTP streams often won't resume — reload the current track.
+    if (a._mpdStopped) {
+        a._mpdStopped = false;
+        if (browserQueue.length) {
+            await playBrowserIndex(browserIndex);
+        } else if (browserNow && browserNow.file) {
+            await playBrowserQueue([browserNow], 0);
+        } else if (typeof flashPlayerAction === "function") {
+            flashPlayerAction("Pick a track in Browser mode");
+        }
+        return;
+    }
     if (!browserNow || !a.src || String(a.src).indexOf("data:audio") === 0) {
         if (browserQueue.length) await playBrowserIndex(browserIndex);
+        else if (browserNow && browserNow.file) await playBrowserQueue([browserNow], 0);
         else if (typeof flashPlayerAction === "function") {
             flashPlayerAction("Pick a track in Browser mode");
         }
         return;
     }
     if (a.paused) {
-        await playBrowserMedia(a);
-        applyBrowserNowToUI();
+        const ok = await playBrowserMedia(a);
+        if (!ok && browserQueue.length) {
+            // Resume failed (common after stop/seek on streams) — hard reload.
+            await playBrowserIndex(browserIndex);
+        } else {
+            applyBrowserNowToUI();
+        }
     } else {
         a.pause();
         updatePlayPauseButton("pause");
+        applyBrowserNowToUI();
     }
 }
 
@@ -330,7 +370,10 @@ async function browserStop() {
     const a = getBrowserAudio();
     a.pause();
     try { a.currentTime = 0; } catch (e) {}
+    // Keep queue + now-playing; mark stopped so ▶ reloads the stream cleanly.
+    a._mpdStopped = true;
     updatePlayPauseButton("stop");
+    applyBrowserNowToUI();
 }
 
 async function browserCmd(name) {
@@ -372,7 +415,8 @@ function applyBrowserNowToUI() {
         const a = getBrowserAudio();
         const elapsed = Math.floor(a.currentTime || 0);
         const duration = Math.floor(a.duration || 0) || 0;
-        status.innerText = (a.paused ? "pause" : "play") + " · browser · " +
+        const state = a._mpdStopped ? "stop" : (a.paused ? "pause" : "play");
+        status.innerText = state + " · browser · " +
             elapsed + (duration ? ("/" + duration) : "");
     }
     const cover = document.getElementById("coverArt");
@@ -413,6 +457,7 @@ window.setBrowserOutput = setBrowserOutput;
 window.playBrowserQueue = playBrowserQueue;
 window.browserPlayPath = browserPlayPath;
 window.browserPlayAlbum = browserPlayAlbum;
+window.browserPlayPlaylist = browserPlayPlaylist;
 window.browserAddPath = browserAddPath;
 window.browserRadio = browserRadio;
 window.browserTogglePlayPause = browserTogglePlayPause;

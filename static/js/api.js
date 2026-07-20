@@ -79,6 +79,73 @@ async function dlnaCmd(action, extra) {
     });
 }
 
+async function airplayDevices() {
+    return api("/api/airplay/devices");
+}
+
+async function airplayScan(timeout) {
+    return api("/api/airplay/scan", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({timeout: timeout || 6})
+    });
+}
+
+async function airplaySelect(payload) {
+    return api("/api/airplay/select", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload || {})
+    });
+}
+
+async function airplayPlay(file, meta) {
+    meta = meta || {};
+    return api("/api/airplay/play", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+            file: file,
+            title: meta.title || "",
+            artist: meta.artist || "",
+            album: meta.album || ""
+        })
+    });
+}
+
+async function airplayCmd(action, extra) {
+    const body = Object.assign({action: action}, extra || {});
+    return api("/api/airplay/cmd", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(body)
+    });
+}
+
+async function airplayPairStart(payload) {
+    return api("/api/airplay/pair/start", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload || {})
+    });
+}
+
+async function airplayPairFinish(pin) {
+    return api("/api/airplay/pair/finish", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({pin: pin})
+    });
+}
+
+async function airplayPairCancel() {
+    return api("/api/airplay/pair/cancel", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: "{}"
+    });
+}
+
 async function apiRadioStart(mode, count) {
     return api("/api/radio/start", {
         method: "POST",

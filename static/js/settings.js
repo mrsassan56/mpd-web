@@ -14,6 +14,9 @@ async function loadSettingsForm() {
         if (typeof loadDlnaSettingsPanel === "function") {
             loadDlnaSettingsPanel();
         }
+        if (typeof loadAirplaySettingsPanel === "function") {
+            loadAirplaySettingsPanel();
+        }
         if (typeof loadListenBrainzSettings === "function") {
             loadListenBrainzSettings(data.listenbrainz);
         }

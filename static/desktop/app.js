@@ -340,7 +340,14 @@ async function loadPlaylistTracks(name) {
         tracks.forEach(function(t, idx) {
             const row = document.createElement("div");
             row.className = "item";
-            bindPlayableRow(row, function() { playPath(t.file); });
+            bindPlayableRow(row, function() {
+                if (typeof isBrowserOutput === "function" && isBrowserOutput() &&
+                    typeof browserPlayPlaylist === "function") {
+                    browserPlayPlaylist(name, idx);
+                    return;
+                }
+                playPath(t.file);
+            });
 
             const left = document.createElement("div");
             left.appendChild(makeTrackLabel(
@@ -403,6 +410,12 @@ async function playPlaylist(name) {
     selectedPlaylist = name;
     const input = document.getElementById("playlistName");
     if (input) input.value = name;
+    if (typeof isBrowserOutput === "function" && isBrowserOutput() &&
+        typeof browserPlayPlaylist === "function") {
+        await browserPlayPlaylist(name, 0);
+        if (typeof showView === "function") showView("now");
+        return;
+    }
     await api("/api/loadplaylist", {
         method: "POST",
         headers: {"Content-Type": "application/json"},

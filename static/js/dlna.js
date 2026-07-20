@@ -33,18 +33,32 @@ function syncDlnaUi(publicBase) {
 
     const castBtns = document.querySelectorAll("[data-dlna-needs-target]");
     castBtns.forEach(function(el) {
-        el.disabled = !hasDlnaTarget();
-        el.classList.toggle("cast-active", hasDlnaTarget());
-        el.title = hasDlnaTarget()
-            ? ("Cast to " + dlnaTargetLabel())
-            : "Select a DLNA device first (Settings or Cast menu)";
+        const hasTarget = hasDlnaTarget() ||
+            (typeof hasAirplayTarget === "function" && hasAirplayTarget());
+        el.disabled = !hasTarget;
+        el.classList.toggle("cast-active", hasTarget);
+        if (typeof hasAirplayTarget === "function" && hasAirplayTarget()) {
+            el.title = "AirPlay to " + airplayTargetLabel();
+        } else if (hasDlnaTarget()) {
+            el.title = "Cast to " + dlnaTargetLabel();
+        } else {
+            el.title = "Select a DLNA or AirPlay device first (Settings)";
+        }
     });
 
     const bar = document.getElementById("dlnaBarControls");
     if (bar) bar.style.display = hasDlnaTarget() ? "flex" : "none";
 
     const chip = document.getElementById("castChip");
-    if (chip) chip.style.display = hasDlnaTarget() ? "inline-flex" : "none";
+    if (chip) {
+        const show = hasDlnaTarget() ||
+            (typeof hasAirplayTarget === "function" && hasAirplayTarget());
+        chip.style.display = show ? "inline-flex" : "none";
+        if (typeof hasAirplayTarget === "function" && hasAirplayTarget()) {
+            const lab = chip.querySelector("[data-dlna-label]");
+            if (lab) lab.innerText = airplayTargetLabel();
+        }
+    }
 
     const baseInput = document.getElementById("dlnaPublicBase");
     if (baseInput && publicBase != null && document.activeElement !== baseInput) {
@@ -284,8 +298,13 @@ async function clearDlnaTarget() {
 
 async function castFile(file, meta) {
     if (!file) return;
+    // Prefer AirPlay when selected; otherwise DLNA.
+    if (typeof hasAirplayTarget === "function" && hasAirplayTarget()) {
+        await airplayPlayFile(file, meta || {});
+        return;
+    }
     if (!hasDlnaTarget()) {
-        showDlnaMsg("Select a DLNA device first (Settings)");
+        showDlnaMsg("Select a DLNA or AirPlay device first (Settings)");
         return;
     }
     showDlnaMsg("Casting…");
@@ -302,8 +321,12 @@ async function castCurrentSong() {
         showDlnaMsg("Nothing playing");
         return;
     }
-    // Prefer file path from last status via setCurrentTrack / window
-    const file = window._dlnaCurrentFile || "";
+    let file = window._dlnaCurrentFile || "";
+    if (!file && typeof isBrowserOutput === "function" && isBrowserOutput() &&
+        typeof getBrowserNow === "function") {
+        const now = getBrowserNow();
+        if (now && now.file) file = now.file;
+    }
     if (!file) {
         showDlnaMsg("No current track file");
         return;
@@ -333,10 +356,17 @@ function makeCastButton(file, meta) {
     btn.type = "button";
     btn.className = "cast-remote-btn cast-row-btn";
     btn.setAttribute("data-dlna-needs-target", "1");
-    btn.disabled = !hasDlnaTarget();
-    btn.title = hasDlnaTarget()
-        ? ("Cast to " + dlnaTargetLabel())
-        : "Select a DLNA device first";
+    const hasTarget = hasDlnaTarget() ||
+        (typeof hasAirplayTarget === "function" && hasAirplayTarget());
+    btn.disabled = !hasTarget;
+    btn.classList.toggle("cast-active", hasTarget);
+    if (typeof hasAirplayTarget === "function" && hasAirplayTarget()) {
+        btn.title = "AirPlay to " + airplayTargetLabel();
+    } else if (hasDlnaTarget()) {
+        btn.title = "Cast to " + dlnaTargetLabel();
+    } else {
+        btn.title = "Select a DLNA or AirPlay device first";
+    }
     const icon = document.createElement("span");
     icon.className = "dlna-icon";
     btn.appendChild(icon);

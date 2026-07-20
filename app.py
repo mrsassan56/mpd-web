@@ -13,6 +13,7 @@ import urllib.parse
 import urllib.error
 
 import dlna_cast
+import airplay_cast
 
 # Default players (used when config.json is missing).
 DEFAULT_PLAYERS = {
@@ -28,6 +29,12 @@ DLNA_CONFIG = {
     "selected_udn": "",
     "selected_location": "",
     "selected_name": "",
+}
+AIRPLAY_CONFIG = {
+    "selected_identifier": "",
+    "selected_address": "",
+    "selected_name": "",
+    "credentials": {},  # identifier -> credentials string
 }
 LISTENBRAINZ_CONFIG = {
     "enabled": False,
@@ -135,6 +142,25 @@ def normalize_dlna_config(raw):
     }
 
 
+def normalize_airplay_config(raw):
+    if not isinstance(raw, dict):
+        raw = {}
+    creds_in = raw.get("credentials") or {}
+    credentials = {}
+    if isinstance(creds_in, dict):
+        for key, val in creds_in.items():
+            k = str(key or "").strip()
+            v = str(val or "").strip()
+            if k and v:
+                credentials[k] = v
+    return {
+        "selected_identifier": str(raw.get("selected_identifier") or "").strip(),
+        "selected_address": str(raw.get("selected_address") or "").strip(),
+        "selected_name": str(raw.get("selected_name") or "").strip(),
+        "credentials": credentials,
+    }
+
+
 def normalize_listenbrainz_config(raw):
     if not isinstance(raw, dict):
         raw = {}
@@ -146,7 +172,7 @@ def normalize_listenbrainz_config(raw):
 
 
 def load_config():
-    global PLAYERS, DEFAULT_PLAYER, current_player, DLNA_CONFIG, LISTENBRAINZ_CONFIG
+    global PLAYERS, DEFAULT_PLAYER, current_player, DLNA_CONFIG, AIRPLAY_CONFIG, LISTENBRAINZ_CONFIG
     with _config_lock:
         data = {}
         if os.path.exists(CONFIG_PATH):
@@ -168,12 +194,14 @@ def load_config():
             DEFAULT_PLAYER = "ifi"
             if not os.path.exists(CONFIG_PATH):
                 DLNA_CONFIG = normalize_dlna_config({})
+                AIRPLAY_CONFIG = normalize_airplay_config({})
                 LISTENBRAINZ_CONFIG = normalize_listenbrainz_config({})
                 save_config()
         else:
             DEFAULT_PLAYER = str(data.get("default_player", "ifi"))
 
         DLNA_CONFIG = normalize_dlna_config(data.get("dlna"))
+        AIRPLAY_CONFIG = normalize_airplay_config(data.get("airplay"))
         LISTENBRAINZ_CONFIG = normalize_listenbrainz_config(data.get("listenbrainz"))
 
         if DEFAULT_PLAYER not in PLAYERS and PLAYERS:
@@ -194,6 +222,7 @@ def save_config():
         existing["default_player"] = DEFAULT_PLAYER
         existing["players"] = PLAYERS
         existing["dlna"] = normalize_dlna_config(DLNA_CONFIG)
+        existing["airplay"] = normalize_airplay_config(AIRPLAY_CONFIG)
         existing["listenbrainz"] = normalize_listenbrainz_config(LISTENBRAINZ_CONFIG)
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(existing, f, indent=2)
@@ -1094,6 +1123,16 @@ def settings_get_api():
             "selected_udn": DLNA_CONFIG.get("selected_udn") or "",
             "selected_location": DLNA_CONFIG.get("selected_location") or "",
             "selected_name": DLNA_CONFIG.get("selected_name") or "",
+        },
+        "airplay": {
+            "selected_identifier": AIRPLAY_CONFIG.get("selected_identifier") or "",
+            "selected_address": AIRPLAY_CONFIG.get("selected_address") or "",
+            "selected_name": AIRPLAY_CONFIG.get("selected_name") or "",
+            "has_credentials": bool(
+                (AIRPLAY_CONFIG.get("credentials") or {}).get(
+                    AIRPLAY_CONFIG.get("selected_identifier") or ""
+                )
+            ),
         },
         "listenbrainz": {
             "enabled": LISTENBRAINZ_CONFIG.get("enabled"),
@@ -3946,6 +3985,189 @@ def dlna_stream_api():
                 yield chunk
 
     return Response(generate_range(), status=206, headers=headers, direct_passthrough=True)
+
+
+# --- AirPlay ------------------------------------------------------------------
+
+@app.route("/api/airplay/devices")
+def airplay_devices_api():
+    devices = airplay_cast.cached_devices()
+    ident = AIRPLAY_CONFIG.get("selected_identifier") or ""
+    return jsonify({
+        "ok": True,
+        "devices": devices,
+        "selected": {
+            "identifier": ident,
+            "address": AIRPLAY_CONFIG.get("selected_address") or "",
+            "name": AIRPLAY_CONFIG.get("selected_name") or "",
+            "has_credentials": bool((AIRPLAY_CONFIG.get("credentials") or {}).get(ident)),
+        },
+        "status": airplay_cast.playback_status(),
+    })
+
+
+@app.route("/api/airplay/scan", methods=["POST"])
+def airplay_scan_api():
+    try:
+        timeout = float((request.json or {}).get("timeout", 5))
+    except Exception:
+        timeout = 5
+    timeout = max(2, min(timeout, 12))
+    try:
+        devices = airplay_cast.discover_devices(timeout=timeout)
+        return jsonify({"ok": True, "devices": devices})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e) or e.__class__.__name__}), 500
+
+
+@app.route("/api/airplay/select", methods=["POST"])
+def airplay_select_api():
+    global AIRPLAY_CONFIG
+    data = request.json or {}
+    identifier = str(data.get("identifier") or "").strip()
+    address = str(data.get("address") or "").strip()
+    name = str(data.get("name") or "").strip()
+
+    if not identifier and not address:
+        AIRPLAY_CONFIG["selected_identifier"] = ""
+        AIRPLAY_CONFIG["selected_address"] = ""
+        AIRPLAY_CONFIG["selected_name"] = ""
+        save_config()
+        return jsonify({"ok": True, "selected": {
+            "identifier": "", "address": "", "name": "", "has_credentials": False
+        }})
+
+    cached = airplay_cast.find_cached(identifier=identifier, address=address) or {}
+    AIRPLAY_CONFIG["selected_identifier"] = identifier or cached.get("identifier") or ""
+    AIRPLAY_CONFIG["selected_address"] = address or cached.get("address") or ""
+    AIRPLAY_CONFIG["selected_name"] = name or cached.get("name") or ""
+    if AIRPLAY_CONFIG["selected_identifier"] or AIRPLAY_CONFIG["selected_address"]:
+        airplay_cast.remember_device({
+            "identifier": AIRPLAY_CONFIG["selected_identifier"],
+            "address": AIRPLAY_CONFIG["selected_address"],
+            "name": AIRPLAY_CONFIG["selected_name"],
+            "model": cached.get("model") or "",
+            "services": cached.get("services") or [],
+        })
+    save_config()
+    ident = AIRPLAY_CONFIG["selected_identifier"]
+    return jsonify({
+        "ok": True,
+        "selected": {
+            "identifier": ident,
+            "address": AIRPLAY_CONFIG["selected_address"],
+            "name": AIRPLAY_CONFIG["selected_name"],
+            "has_credentials": bool((AIRPLAY_CONFIG.get("credentials") or {}).get(ident)),
+        },
+    })
+
+
+@app.route("/api/airplay/play", methods=["POST"])
+def airplay_play_api():
+    data = request.json or {}
+    rel = str(data.get("file") or "").strip()
+    title = str(data.get("title") or "").strip()
+    artist = str(data.get("artist") or "").strip()
+    album = str(data.get("album") or "").strip()
+
+    identifier = AIRPLAY_CONFIG.get("selected_identifier") or ""
+    address = AIRPLAY_CONFIG.get("selected_address") or ""
+    if not identifier and not address:
+        return jsonify({
+            "ok": False,
+            "error": "No AirPlay device selected — scan and pick one in Settings"
+        }), 400
+
+    if not rel:
+        return jsonify({"ok": False, "error": "No file"}), 400
+
+    full, err = resolve_music_file(rel)
+    if err:
+        return jsonify({"ok": False, "error": err}), 404
+
+    creds = (AIRPLAY_CONFIG.get("credentials") or {}).get(identifier) or ""
+    try:
+        airplay_cast.play_file(
+            identifier=identifier,
+            address=address,
+            file_path=full,
+            credentials=creds,
+            title=title,
+            artist=artist,
+            album=album,
+        )
+        return jsonify({
+            "ok": True,
+            "device": AIRPLAY_CONFIG.get("selected_name") or identifier or address,
+            "file": rel,
+            "title": title,
+        })
+    except Exception as e:
+        msg = str(e) or e.__class__.__name__
+        if "pair" in msg.lower() or "auth" in msg.lower() or "credential" in msg.lower():
+            msg += " — try Pair in Settings (enter the PIN shown on the device)"
+        return jsonify({"ok": False, "error": msg}), 500
+
+
+@app.route("/api/airplay/cmd", methods=["POST"])
+def airplay_cmd_api():
+    data = request.json or {}
+    action = str(data.get("action") or "").strip().lower()
+    if action == "stop":
+        try:
+            airplay_cast.stop_playback()
+            return jsonify({"ok": True, "action": "stop"})
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e) or e.__class__.__name__}), 500
+    return jsonify({"ok": False, "error": "Unknown action (supported: stop)"}), 400
+
+
+@app.route("/api/airplay/pair/start", methods=["POST"])
+def airplay_pair_start_api():
+    data = request.json or {}
+    identifier = str(data.get("identifier") or AIRPLAY_CONFIG.get("selected_identifier") or "").strip()
+    address = str(data.get("address") or AIRPLAY_CONFIG.get("selected_address") or "").strip()
+    if not identifier and not address:
+        return jsonify({"ok": False, "error": "Select an AirPlay device first"}), 400
+    try:
+        result = airplay_cast.pair_start(identifier, address=address)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e) or e.__class__.__name__}), 500
+
+
+@app.route("/api/airplay/pair/finish", methods=["POST"])
+def airplay_pair_finish_api():
+    global AIRPLAY_CONFIG
+    data = request.json or {}
+    pin = str(data.get("pin") or "").strip()
+    try:
+        result = airplay_cast.pair_finish(pin)
+        ident = result.get("identifier") or AIRPLAY_CONFIG.get("selected_identifier") or ""
+        creds = result.get("credentials") or ""
+        if ident and creds:
+            credentials = dict(AIRPLAY_CONFIG.get("credentials") or {})
+            credentials[ident] = creds
+            AIRPLAY_CONFIG["credentials"] = credentials
+            if not AIRPLAY_CONFIG.get("selected_identifier"):
+                AIRPLAY_CONFIG["selected_identifier"] = ident
+            save_config()
+        return jsonify({
+            "ok": True,
+            "identifier": ident,
+            "paired": True,
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e) or e.__class__.__name__}), 500
+
+
+@app.route("/api/airplay/pair/cancel", methods=["POST"])
+def airplay_pair_cancel_api():
+    try:
+        airplay_cast.pair_cancel()
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e) or e.__class__.__name__}), 500
 
 
 if __name__ == "__main__":

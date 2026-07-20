@@ -24,6 +24,7 @@ function showTab(tab, skipBrowseLoad) {
         if (tab === "settings") {
         loadPlayers();
         if (typeof loadDlnaSettingsPanel === "function") loadDlnaSettingsPanel();
+        if (typeof loadAirplaySettingsPanel === "function") loadAirplaySettingsPanel();
         if (typeof loadPlaybackSettings === "function") loadPlaybackSettings();
     }
     if (tab === "browse" && !skipBrowseLoad) setLibMode(libMode, true);
@@ -563,7 +564,15 @@ async function loadPlaylistTracksMobile(name) {
         (data.tracks || []).forEach(function(t, idx) {
             const row = document.createElement("div");
             row.className = "item";
-            bindPlayableRow(row, function() { playPath(t.file); });
+            bindPlayableRow(row, function() {
+                if (typeof isBrowserOutput === "function" && isBrowserOutput() &&
+                    typeof browserPlayPlaylist === "function") {
+                    browserPlayPlaylist(name, idx);
+                    showTab("now");
+                    return;
+                }
+                playPath(t.file);
+            });
             row.appendChild(makeTrackLabel(
                 (idx + 1) + ". " + (t.title || shortFileName(t.file)),
                 t.file
@@ -590,6 +599,12 @@ async function playPlaylist(name) {
     selectedPlaylist = name;
     const input = document.getElementById("playlistName");
     if (input) input.value = name;
+    if (typeof isBrowserOutput === "function" && isBrowserOutput() &&
+        typeof browserPlayPlaylist === "function") {
+        await browserPlayPlaylist(name, 0);
+        showTab("now");
+        return;
+    }
     await api("/api/loadplaylist", {
         method: "POST",
         headers: {"Content-Type": "application/json"},

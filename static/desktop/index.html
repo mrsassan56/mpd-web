@@ -68,6 +68,10 @@
             <select id="castSelect" onchange="onCastSelectChange()" title="DLNA cast target">
                 <option value="">— Off —</option>
             </select>
+            <label class="player-label cast-label">AirPlay</label>
+            <select id="airplaySelect" onchange="onAirplaySelectChange()" title="AirPlay target">
+                <option value="">— Off —</option>
+            </select>
             <a class="mobile-link" href="/m" onclick="localStorage.removeItem('mpd-prefer-desktop')">
                 <span class="nav-icon">📱</span><span class="mobile-link-text">Mobile view →</span>
             </a>
@@ -231,6 +235,17 @@
                 <div id="dlnaDeviceList" class="settings-list"></div>
                 <div class="settings-msg" id="dlnaMsg"></div>
 
+                <h3 class="panel-label" style="margin-top:24px">AirPlay</h3>
+                <p class="settings-intro">Discover AirPlay speakers / Apple TV / HomePod on your LAN and stream library tracks (FLAC, MP3, …). Some devices need Pair once (PIN on screen).</p>
+                <div class="toolbar settings-toolbar">
+                    <button class="pill accent" onclick="scanAirplayDevices()">Scan AirPlay</button>
+                    <button class="ghost" onclick="startAirplayPair()">Pair selected</button>
+                    <button class="ghost" onclick="clearAirplayTarget()">Clear target</button>
+                </div>
+                <div class="meta" style="margin:8px 0">Target: <span data-airplay-label>No AirPlay target</span></div>
+                <div id="airplayDeviceList" class="settings-list"></div>
+                <div class="settings-msg" id="airplayMsg"></div>
+
                 <h3 class="panel-label" style="margin-top:24px">ListenBrainz scrobbling</h3>
                 <p class="settings-intro">Optional. Get a token from <a href="https://listenbrainz.org/settings/" target="_blank" rel="noopener">listenbrainz.org/settings</a>. Plays are also kept in Recently Played locally.</p>
                 <div class="settings-field">
@@ -285,6 +300,10 @@
             <button type="button" class="pill" onclick="dlnaTransport('pause')" title="Pause cast">❚❚</button>
             <button type="button" class="pill" onclick="dlnaTransport('stop')" title="Stop cast">■</button>
         </div>
+        <div class="dlna-bar-controls" id="airplayBarControls" style="display:none">
+            <span class="dlna-bar-label" data-airplay-label>AirPlay</span>
+            <button type="button" class="pill" onclick="airplayTransport('stop')" title="Stop AirPlay">■</button>
+        </div>
 
         <div class="bar-status" id="status">—</div>
         <div class="player-action-msg" id="playerActionMsg"></div>
@@ -302,13 +321,14 @@
         </div>
     </div>
 
-    <script src="/static/js/api.js"></script>
+    <script src="/static/js/api.js?v=8"></script>
     <script src="/static/js/utils.js"></script>
     <script src="/static/js/playlists.js"></script>
-    <script src="/static/js/dlna.js"></script>
+    <script src="/static/js/dlna.js?v=8"></script>
+    <script src="/static/js/airplay.js?v=8"></script>
     <script src="/static/js/shortcuts.js"></script>
     <script src="/static/js/sleeptimer.js"></script>
-    <script src="/static/js/browserout.js"></script>
+    <script src="/static/js/browserout.js?v=7"></script>
     <script src="/static/js/settings.js?v=5"></script>
     <script>
     window.addEventListener("error", function(e) {
@@ -316,6 +336,6 @@
         if (t) t.innerText = "JS ERROR: " + (e.message || String(e));
     });
     </script>
-    <script src="/static/desktop/app.js"></script>
+    <script src="/static/desktop/app.js?v=7"></script>
 </body>
 </html>
