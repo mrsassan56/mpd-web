@@ -74,7 +74,12 @@ def _conf_to_dict(conf) -> Dict[str, Any]:
 async def _async_discover(timeout: float = 5) -> List[Dict[str, Any]]:
     from pyatv import scan
 
-    devices_found = await scan(timeout=timeout)
+    loop = asyncio.get_running_loop()
+    try:
+        devices_found = await scan(loop, timeout=timeout)
+    except TypeError:
+        # Newer pyatv: loop is optional / keyword-only
+        devices_found = await scan(timeout=timeout)
     devices: List[Dict[str, Any]] = []
     seen = set()
     for conf in devices_found or []:
@@ -82,11 +87,6 @@ async def _async_discover(timeout: float = 5) -> List[Dict[str, Any]]:
         key = entry.get("identifier") or entry.get("address")
         if not key or key in seen:
             continue
-        # Keep only devices that advertise AirPlay or RAOP (audio cast).
-        services_l = " ".join(entry.get("services") or []).lower()
-        if services_l and ("airplay" not in services_l and "raop" not in services_l):
-            # Still include — many speakers only show as RAOP via Protocol enum str
-            pass
         seen.add(key)
         devices.append(entry)
 
@@ -141,10 +141,12 @@ def remember_device(device: Dict[str, Any]) -> None:
 async def _find_conf(identifier: str, address: str = "", timeout: float = 5):
     from pyatv import scan
 
-    hosts = None
-    if address:
-        hosts = [address]
-    found = await scan(timeout=timeout, hosts=hosts)
+    loop = asyncio.get_running_loop()
+    hosts = [address] if address else None
+    try:
+        found = await scan(loop, timeout=timeout, hosts=hosts)
+    except TypeError:
+        found = await scan(timeout=timeout, hosts=hosts)
     for conf in found or []:
         if identifier and str(conf.identifier) == str(identifier):
             return conf
@@ -171,6 +173,7 @@ async def _async_play_file(
     from pyatv.const import Protocol
     from pyatv.interface import MediaMetadata
 
+    loop = asyncio.get_running_loop()
     conf = await _find_conf(identifier, address=address, timeout=6)
     if conf is None:
         raise RuntimeError("AirPlay device not found on network — scan again")
@@ -185,7 +188,10 @@ async def _async_play_file(
             except Exception:
                 pass
 
-    atv = await connect(conf, loop=asyncio.get_running_loop())
+    try:
+        atv = await connect(conf, loop=loop)
+    except TypeError:
+        atv = await connect(conf, loop)
     try:
         if stop_flag and stop_flag.is_set():
             return
@@ -293,6 +299,7 @@ async def _async_pair_start(identifier: str, address: str = ""):
     from pyatv import pair
     from pyatv.const import Protocol
 
+    loop = asyncio.get_running_loop()
     conf = await _find_conf(identifier, address=address, timeout=6)
     if conf is None:
         raise RuntimeError("AirPlay device not found — scan again")
@@ -305,7 +312,10 @@ async def _async_pair_start(identifier: str, address: str = ""):
     except Exception:
         protocol = Protocol.RAOP
 
-    pairing = await pair(conf, protocol, asyncio.get_running_loop())
+    try:
+        pairing = await pair(conf, protocol, loop)
+    except TypeError:
+        pairing = await pair(conf, protocol, loop=loop)
     await pairing.begin()
     return pairing, conf, protocol
 
