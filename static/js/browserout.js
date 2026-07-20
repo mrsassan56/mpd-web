@@ -111,6 +111,10 @@ function setBrowserOutput(on) {
 function updateBrowserOutputUI() {
     const btn = document.getElementById("browserOutBtn");
     if (btn) btn.classList.toggle("active", browserOutEnabled);
+    if (typeof syncOutputSelect === "function") {
+        syncOutputSelect();
+        return;
+    }
     const sel = document.getElementById("playerSelect");
     if (!sel) return;
     const has = Array.prototype.some.call(sel.options, function(o) {
@@ -128,15 +132,16 @@ function updateBrowserOutputUI() {
 function normalizeBrowserItems(items) {
     return (items || []).map(function(item) {
         if (typeof item === "string") {
-            return {file: item, title: "", artist: "", album: ""};
+            return {file: item, url: "", title: "", artist: "", album: ""};
         }
         return {
             file: item.file || item.path || "",
+            url: item.url || "",
             title: item.title || "",
             artist: item.artist || "",
             album: item.album || ""
         };
-    }).filter(function(item) { return !!item.file; });
+    }).filter(function(item) { return !!(item.file || item.url); });
 }
 
 function playBrowserQueue(items, startIndex) {
@@ -156,14 +161,15 @@ async function playBrowserIndex(idx) {
     browserIndex = (idx + browserQueue.length) % browserQueue.length;
     const item = browserQueue[browserIndex];
     browserNow = {
-        file: item.file,
-        title: item.title || shortNameFromPath(item.file),
+        file: item.file || "",
+        url: item.url || "",
+        title: item.title || shortNameFromPath(item.file || item.url),
         artist: item.artist || "",
         album: item.album || ""
     };
     const a = getBrowserAudio();
     a._mpdStopped = false;
-    a.src = streamUrlForFile(item.file);
+    a.src = item.url || streamUrlForFile(item.file);
     a.load();
     await playBrowserMedia(a);
     applyBrowserNowToUI();

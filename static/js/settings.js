@@ -158,7 +158,8 @@ function makeSettingsCard(p, isDefault) {
 
     const head = document.createElement("div");
     head.className = "settings-card-head";
-    head.innerHTML = "<strong>Output</strong>";
+    head.innerHTML = "<strong>" + (p.name || p.key || "Output") + "</strong>" +
+        (isDefault ? " <span class=\"settings-default-badge\">default</span>" : "");
     card.appendChild(head);
 
     card.appendChild(settingsField("Key (internal)", "key", p.key || "", "player id e.g. ifi"));
@@ -255,6 +256,7 @@ async function saveSettingsPlayers() {
         });
         if (msg) msg.innerText = "Saved. Reloading players…";
         if (typeof loadPlayers === "function") await loadPlayers();
+        if (typeof syncOutputSelect === "function") syncOutputSelect();
         loadSettingsForm();
         setTimeout(function() {
             if (msg) msg.innerText = "";

@@ -286,6 +286,11 @@ async function togglePlayPause() {
             await browserTogglePlayPause();
             return;
         }
+        if (typeof isRemoteCastOutput === "function" && isRemoteCastOutput() &&
+            typeof castOutputTogglePlayPause === "function") {
+            await castOutputTogglePlayPause();
+            return;
+        }
         if (playbackState === "play") {
             await api("/api/pause", {method: "POST"});
         } else {

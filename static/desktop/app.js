@@ -37,8 +37,12 @@ function showView(name) {
     const heading = document.getElementById("viewHeading");
     if (heading) {
         if (name === "library") {
-            heading.innerText = libMode === "albums" ? "Albums" :
-                libMode === "artists" ? "Artists" : "Folders";
+            if (typeof isDlnaLibrary === "function" && isDlnaLibrary()) {
+                heading.innerText = "DLNA";
+            } else {
+                heading.innerText = libMode === "albums" ? "Albums" :
+                    libMode === "artists" ? "Artists" : "Folders";
+            }
         } else {
             heading.innerText = VIEW_HEADINGS[name] || name;
         }
@@ -49,6 +53,14 @@ function showView(name) {
     if (name === "settings") loadSettingsForm();
     if (name === "recent") loadRecentPlays();
     if (name === "search" && searchMode === "genres") toggleGenres(true);
+    if (name === "library" && typeof isDlnaLibrary === "function" && isDlnaLibrary()) {
+        if (typeof syncLibrarySourceNav === "function") syncLibrarySourceNav();
+        if (typeof dlnaBrowse === "function") {
+            dlnaBrowse(typeof dlnaCurrentObjectId !== "undefined" ? dlnaCurrentObjectId : "0");
+        }
+    }
+
+    document.body.classList.toggle("view-settings", name === "settings");
 }
 
 function toggleCompactMode() {
@@ -479,12 +491,18 @@ function addPlaylistAction(actions, file) {
 }
 
 async function refresh() {
+    const seq = typeof bumpRefreshSeq === "function" ? bumpRefreshSeq() : 0;
     try {
         if (typeof isBrowserOutput === "function" && isBrowserOutput()) {
             if (typeof applyBrowserNowToUI === "function") applyBrowserNowToUI();
             return;
         }
+        if (typeof isRemoteCastOutput === "function" && isRemoteCastOutput()) {
+            if (typeof applyCastOutputUI === "function") applyCastOutputUI();
+            return;
+        }
         const data = await api("/api/status");
+        if (typeof isRefreshStale === "function" && isRefreshStale(seq)) return;
 
         const song = data.song || {};
         const status = data.status || {};
@@ -599,6 +617,11 @@ async function refresh() {
         setCurrentTrack(song);
 
     } catch (e) {
+        if (typeof isRemoteCastOutput === "function" && isRemoteCastOutput()) {
+            if (typeof applyCastOutputUI === "function") applyCastOutputUI();
+            return;
+        }
+        if (typeof isBrowserOutput === "function" && isBrowserOutput()) return;
         document.getElementById("title").innerText = "Cannot connect to MPD";
         document.getElementById("artist").innerText = e.message || String(e);
         const heroTitle = document.getElementById("heroTitle");
@@ -633,6 +656,10 @@ async function cmd(name) {
                 loadQueue();
             }
             return;
+        }
+        if (typeof isRemoteCastOutput === "function" && isRemoteCastOutput() &&
+            typeof castOutputCmd === "function") {
+            if (await castOutputCmd(name)) return;
         }
         await api("/api/" + name, {method: "POST"});
         refresh();
@@ -1032,6 +1059,11 @@ async function playPath(path) {
             await browserPlayPath(path);
             return;
         }
+        if (typeof isRemoteCastOutput === "function" && isRemoteCastOutput() &&
+            typeof castOutputPlayPath === "function") {
+            await castOutputPlayPath(path);
+            return;
+        }
         await api("/api/playpath", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
@@ -1053,6 +1085,9 @@ function playCurrentFolder() {
 
 
 async function loadQueue() {
+    if (typeof usesMpdTransport === "function" && !usesMpdTransport()) {
+        return;
+    }
     const box = document.getElementById("queue");
     clearElement(box);
 
@@ -1347,26 +1382,27 @@ let libPage = {kind: "", key: "", offset: 0, total: 0, items: []};
 async function loadPlayers() {
     try {
         const data = await api("/api/players");
-        const sel = document.getElementById("playerSelect");
-
-        clearElement(sel);
-
-        const browserOpt = document.createElement("option");
-        browserOpt.value = (typeof BROWSER_PLAYER_KEY !== "undefined" ? BROWSER_PLAYER_KEY : "__browser__");
-        browserOpt.innerText = "This browser";
-        sel.appendChild(browserOpt);
-
-        (data.players || []).forEach(function(p) {
-            const opt = document.createElement("option");
-            opt.value = p.key;
-            opt.innerText = p.name;
-            sel.appendChild(opt);
-        });
-
-        if (typeof isBrowserOutput === "function" && isBrowserOutput()) {
-            sel.value = browserOpt.value;
-        } else if (data.current) {
-            sel.value = data.current;
+        if (typeof fillOutputSelect === "function") {
+            fillOutputSelect(data);
+        } else {
+            const sel = document.getElementById("playerSelect");
+            if (!sel) return;
+            clearElement(sel);
+            const browserOpt = document.createElement("option");
+            browserOpt.value = (typeof BROWSER_PLAYER_KEY !== "undefined" ? BROWSER_PLAYER_KEY : "__browser__");
+            browserOpt.innerText = "This browser";
+            sel.appendChild(browserOpt);
+            (data.players || []).forEach(function(p) {
+                const opt = document.createElement("option");
+                opt.value = p.key;
+                opt.innerText = p.name;
+                sel.appendChild(opt);
+            });
+            if (typeof isBrowserOutput === "function" && isBrowserOutput()) {
+                sel.value = browserOpt.value;
+            } else if (data.current) {
+                sel.value = data.current;
+            }
         }
         if (typeof updateBrowserOutputUI === "function") updateBrowserOutputUI();
     } catch (e) {}
@@ -1374,7 +1410,12 @@ async function loadPlayers() {
 
 
 async function changePlayer() {
+    if (typeof onOutputSelectChange === "function") {
+        onOutputSelectChange();
+        return;
+    }
     const sel = document.getElementById("playerSelect");
+    if (!sel) return;
     const key = sel.value;
 
     try {
@@ -1411,6 +1452,11 @@ async function changePlayer() {
 function setLibMode(mode, force, skipLoad) {
     libMode = mode;
     showView("library");
+
+    if (typeof isDlnaLibrary === "function" && isDlnaLibrary()) {
+        if (typeof syncLibrarySourceNav === "function") syncLibrarySourceNav();
+        return;
+    }
 
     const folderControls = document.getElementById("folderControls");
     if (folderControls) {
@@ -1733,6 +1779,11 @@ async function addAlbum(al, play) {
             await browserPlayAlbum(al);
             return;
         }
+        if (play && typeof isRemoteCastOutput === "function" && isRemoteCastOutput() &&
+            typeof castOutputPlayAlbum === "function") {
+            await castOutputPlayAlbum(al);
+            return;
+        }
         await api("/api/addalbum", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
@@ -1866,10 +1917,16 @@ refreshPlaylistNames().then(function() {
     loadPlayers();
     loadPlaylists();
     updateRadioStatus();
-    refresh();
-    showView("now");
-    loadQueue();
-    if (typeof refreshDlnaState === "function") refreshDlnaState().catch(function() {});
+    const boot = typeof initOutputRouting === "function"
+        ? initOutputRouting()
+        : Promise.resolve().then(function() { return refresh(); });
+    boot.then(function() {
+        if (typeof initDlnaLibrary === "function") initDlnaLibrary();
+        showView("now");
+        if (typeof usesMpdTransport === "function" && usesMpdTransport()) {
+            loadQueue();
+        }
+    });
 });
 
 

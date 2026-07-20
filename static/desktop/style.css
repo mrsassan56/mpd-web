@@ -100,6 +100,39 @@ button {
     letter-spacing: 0.04em;
 }
 
+.brand-select {
+    flex: 1;
+    min-width: 0;
+    padding: 6px 8px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: rgba(255, 255, 255, 0.06);
+    color: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+}
+
+body.theme-light .brand-select {
+    background: rgba(0, 0, 0, 0.04);
+}
+
+.dlna-server-select {
+    min-width: 140px;
+    max-width: 220px;
+    padding: 6px 8px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: rgba(255, 255, 255, 0.04);
+    color: inherit;
+    font-size: 12px;
+}
+
+body.theme-light .dlna-server-select {
+    background: rgba(0, 0, 0, 0.03);
+}
+
 .nav {
     display: flex;
     flex-direction: column;
@@ -197,6 +230,12 @@ button {
     border-radius: var(--radius-sm);
     padding: 8px 10px;
     font-size: 12px;
+}
+
+.topbar-output #playerSelect,
+.topbar-output #castSelect,
+.topbar-output #airplaySelect {
+    margin: 0;
 }
 
 #castSelect {
@@ -301,11 +340,88 @@ button {
 
 .topbar {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: space-between;
+    gap: 16px;
     padding: 22px 32px 12px;
     flex-shrink: 0;
     position: relative;
+}
+
+.topbar-main {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-width: 0;
+    flex: 1;
+}
+
+.topbar-output {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 10px 14px;
+}
+
+.output-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+}
+
+.output-group-unified {
+    flex: 1 1 280px;
+    max-width: 480px;
+}
+
+.output-select-unified {
+    min-width: 240px;
+    font-size: 13px;
+}
+
+.output-select-unified optgroup {
+    font-style: normal;
+    font-weight: 600;
+    color: var(--text-dim);
+}
+
+.output-select-unified option {
+    font-weight: 400;
+    color: var(--text);
+    padding: 4px 0;
+}
+
+.output-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+.output-select {
+    width: 100%;
+    background: var(--bg-elevated);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 8px 12px;
+    font-size: 13px;
+}
+
+.output-select.cast-select {
+    border-color: rgba(74, 158, 255, 0.35);
+}
+
+.topbar-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+    padding-top: 4px;
 }
 
 .top-icon-btn.timer-btn {
@@ -1501,11 +1617,28 @@ body.compact-mode .playlist-manager {
     min-height: 18px;
 }
 
+/* Settings uses full workspace width (other views stay narrower). */
+body.view-settings .content {
+    padding-left: 40px;
+    padding-right: 40px;
+}
+
+.settings-view {
+    max-width: min(100%, 1320px);
+}
+
+.settings-scroll {
+    overflow-y: auto;
+    flex: 1;
+    min-height: 0;
+    padding-bottom: 24px;
+}
+
 .settings-intro {
     color: var(--text-muted);
     font-size: 13px;
     margin: 0 0 16px;
-    max-width: 560px;
+    max-width: 900px;
     line-height: 1.5;
 }
 
@@ -1518,6 +1651,26 @@ body.compact-mode .playlist-manager {
     flex: 1;
     min-height: 0;
     padding-bottom: 8px;
+}
+
+.settings-players-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 16px;
+    max-width: none;
+    overflow: visible;
+}
+
+body.view-settings .settings-list:not(.settings-players-grid) {
+    max-width: min(100%, 900px);
+}
+
+body.view-settings .settings-field {
+    max-width: min(100%, 480px);
+}
+
+body.view-settings .panel-label {
+    max-width: 900px;
 }
 
 .settings-card {
@@ -1533,6 +1686,18 @@ body.compact-mode .playlist-manager {
     color: var(--text-dim);
     text-transform: uppercase;
     letter-spacing: 0.05em;
+}
+
+.settings-default-badge {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 2px 6px;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
 }
 
 .settings-field {
@@ -1589,6 +1754,22 @@ body.compact-mode .playlist-manager {
 }
 
 @media (max-width: 900px) {
+    .topbar {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 12px;
+    }
+
+    .topbar-actions {
+        align-self: flex-end;
+        padding-top: 0;
+    }
+
+    .output-group-unified {
+        flex: 1 1 100%;
+        max-width: none;
+    }
+
     .sidebar {
         width: 72px;
         padding: 16px 8px;

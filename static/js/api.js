@@ -63,11 +63,40 @@ async function dlnaPlay(file, meta) {
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({
             file: file,
+            url: meta.url || "",
+            mime: meta.mime || "",
             title: meta.title || "",
             artist: meta.artist || "",
             album: meta.album || ""
         })
     });
+}
+
+async function dlnaPlayUrl(url, meta) {
+    meta = meta || {};
+    return dlnaPlay("", Object.assign({}, meta, {url: url}));
+}
+
+async function dlnaServerList() {
+    return api("/api/dlna/server/list");
+}
+
+async function dlnaServerScan(timeout) {
+    return api("/api/dlna/server/scan", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({timeout: timeout || 6})
+    });
+}
+
+async function dlnaServerBrowse(location, objectId, start, count) {
+    const q = new URLSearchParams({
+        location: location,
+        object_id: objectId || "0"
+    });
+    if (start != null) q.set("start", String(start));
+    if (count != null) q.set("count", String(count));
+    return api("/api/dlna/server/browse?" + q.toString());
 }
 
 async function dlnaCmd(action, extra) {
@@ -105,7 +134,9 @@ async function airplayPlay(file, meta) {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({
-            file: file,
+            file: file || "",
+            url: meta.url || "",
+            mime: meta.mime || "",
             title: meta.title || "",
             artist: meta.artist || "",
             album: meta.album || ""

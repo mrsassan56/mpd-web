@@ -47,7 +47,11 @@ function syncDlnaUi(publicBase) {
     });
 
     const bar = document.getElementById("dlnaBarControls");
-    if (bar) bar.style.display = hasDlnaTarget() ? "flex" : "none";
+    if (bar) {
+        const show = hasDlnaTarget() &&
+            typeof isDlnaCastOutput === "function" && isDlnaCastOutput();
+        bar.style.display = show ? "flex" : "none";
+    }
 
     const chip = document.getElementById("castChip");
     if (chip) {
@@ -65,7 +69,9 @@ function syncDlnaUi(publicBase) {
         if (!baseInput.value) baseInput.value = publicBase;
     }
 
-    fillCastSelect();
+    if (typeof syncOutputSelect === "function") {
+        syncOutputSelect();
+    }
 
     const list = document.getElementById("dlnaDeviceList");
     if (list && list.dataset.bound === "1") {
@@ -74,6 +80,10 @@ function syncDlnaUi(publicBase) {
 }
 
 function fillCastSelect() {
+    if (typeof syncOutputSelect === "function") {
+        syncOutputSelect();
+        return;
+    }
     const sel = document.getElementById("castSelect");
     if (!sel) return;
     const prev = sel.value;
@@ -154,6 +164,7 @@ async function onCastSelectChange() {
         rememberLocalDevice(dlnaSelected);
         syncDlnaUi(res.public_base || "");
         showDlnaMsg("Casting to " + dlnaTargetLabel() + "…");
+        if (typeof syncOutputSelect === "function") syncOutputSelect();
         await castCurrentSong();
     } catch (e) {
         showDlnaMsg("Select failed: " + (e.message || String(e)));
@@ -288,6 +299,7 @@ async function clearDlnaTarget() {
         await dlnaSelect({udn: "", location: "", name: ""});
         dlnaSelected = {udn: "", location: "", name: ""};
         syncDlnaUi();
+        if (typeof syncOutputSelect === "function") syncOutputSelect();
         const list = document.getElementById("dlnaDeviceList");
         if (list) renderDlnaDeviceList(list, dlnaDevicesCache);
         showDlnaMsg("DLNA target cleared");

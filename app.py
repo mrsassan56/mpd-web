@@ -13,6 +13,7 @@ import urllib.parse
 import urllib.error
 
 import dlna_cast
+import dlna_server
 import airplay_cast
 
 # Default players (used when config.json is missing).
@@ -1799,6 +1800,24 @@ def play_path_api():
         client.add(path)
         client.play()
         return jsonify({"ok": True})
+
+    return with_mpd(run)
+
+
+@app.route("/api/playurl", methods=["POST"])
+def play_url_api():
+    data = request.json or {}
+    url = str(data.get("url") or "").strip()
+    if not url:
+        return jsonify({"ok": False, "error": "No url"}), 400
+    if not url.startswith(("http://", "https://")):
+        return jsonify({"ok": False, "error": "Invalid url"}), 400
+
+    def run(client):
+        client.clear()
+        client.add(url)
+        client.play()
+        return jsonify({"ok": True, "url": url})
 
     return with_mpd(run)
 
@@ -3741,18 +3760,30 @@ def guess_audio_mime(path):
 
 
 def resolve_music_file(rel_path):
-    """Resolve an MPD-relative path under the active player's music_root."""
-    root = active_player().get("music_root")
-    if not root or not rel_path:
+    """Resolve an MPD-relative path under a configured music_root on this host."""
+    if not rel_path:
         return None, "music_root not configured for this player"
-    rel = rel_path.lstrip("/")
-    root_abs = os.path.realpath(root)
-    full = os.path.realpath(os.path.join(root_abs, rel))
-    if full != root_abs and not full.startswith(root_abs + os.sep):
-        return None, "invalid path"
-    if not os.path.isfile(full):
-        return None, "file not found on disk"
-    return full, None
+    if str(rel_path).startswith(("http://", "https://")):
+        return str(rel_path), None
+
+    rel = str(rel_path).lstrip("/")
+    roots = []
+    for info in PLAYERS.values():
+        root = info.get("music_root")
+        if root and root not in roots:
+            roots.append(root)
+    if not roots:
+        return None, "music_root not configured for this player"
+
+    for root in roots:
+        root_abs = os.path.realpath(root)
+        full = os.path.realpath(os.path.join(root_abs, rel))
+        if full != root_abs and not full.startswith(root_abs + os.sep):
+            continue
+        if os.path.isfile(full):
+            return full, None
+
+    return None, "file not found on disk — check music_root points at library on this Pi"
 
 
 def dlna_public_base(fallback_host_url=""):
@@ -3837,50 +3868,61 @@ def dlna_select_api():
 def dlna_play_api():
     data = request.json or {}
     rel = str(data.get("file") or "").strip()
-    if not rel:
-        return jsonify({"ok": False, "error": "No file"}), 400
+    direct_url = str(data.get("url") or "").strip()
+    if not rel and not direct_url:
+        return jsonify({"ok": False, "error": "No file or url"}), 400
 
     location = DLNA_CONFIG.get("selected_location") or ""
     if not location:
         return jsonify({"ok": False, "error": "No DLNA device selected — scan and pick one in Settings"}), 400
 
-    full, err = resolve_music_file(rel)
-    if err:
-        return jsonify({"ok": False, "error": err}), 400
-
-    title = str(data.get("title") or os.path.basename(rel))
+    title = str(data.get("title") or "")
     artist = str(data.get("artist") or "")
     album = str(data.get("album") or "")
 
-    try:
-        def meta(client):
-            rows = client.find("file", rel)
-            return rows[0] if rows else {}
+    if direct_url:
+        if not direct_url.startswith(("http://", "https://")):
+            return jsonify({"ok": False, "error": "Invalid url"}), 400
+        mime = str(data.get("mime") or "").strip() or guess_audio_mime(direct_url)
+        media_url = direct_url
+        if not title:
+            title = os.path.basename(urllib.parse.urlparse(direct_url).path) or "Track"
+    else:
+        full, err = resolve_music_file(rel)
+        if err:
+            return jsonify({"ok": False, "error": err}), 400
 
-        tags = with_mpd(meta)
-        if isinstance(tags, tuple) or not isinstance(tags, dict):
-            tags = {}
-        if tags.get("file"):
-            title = tags.get("title") or title
-            artist = tags.get("artist") or artist
-            album = tags.get("album") or album
-    except Exception:
-        pass
+        title = title or os.path.basename(rel)
 
-    mime = guess_audio_mime(full)
-    base = dlna_public_base()
-    if not base:
-        return jsonify({
-            "ok": False,
-            "error": "Set DLNA public base URL in Settings (e.g. http://192.168.9.232:5000)"
-        }), 400
+        try:
+            def meta(client):
+                rows = client.find("file", rel)
+                return rows[0] if rows else {}
 
-    # Persist discovered base if empty so stream URLs stay stable.
-    if not DLNA_CONFIG.get("public_base"):
-        DLNA_CONFIG["public_base"] = base
-        save_config()
+            tags = with_mpd(meta)
+            if isinstance(tags, tuple) or not isinstance(tags, dict):
+                tags = {}
+            if tags.get("file"):
+                title = tags.get("title") or title
+                artist = tags.get("artist") or artist
+                album = tags.get("album") or album
+        except Exception:
+            pass
 
-    media_url = build_dlna_stream_url(rel, base)
+        mime = guess_audio_mime(full)
+        base = dlna_public_base()
+        if not base:
+            return jsonify({
+                "ok": False,
+                "error": "Set DLNA public base URL in Settings (e.g. http://192.168.9.232:5000)"
+            }), 400
+
+        if not DLNA_CONFIG.get("public_base"):
+            DLNA_CONFIG["public_base"] = base
+            save_config()
+
+        media_url = build_dlna_stream_url(rel, base)
+
     try:
         dlna_cast.play_uri(location, media_url, title, artist, album, mime)
         return jsonify({
@@ -3889,6 +3931,63 @@ def dlna_play_api():
             "url": media_url,
             "title": title,
         })
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e) or e.__class__.__name__}), 500
+
+
+@app.route("/api/dlna/server/list")
+def dlna_server_list_api():
+    return jsonify({"servers": dlna_server.cached_servers()})
+
+
+@app.route("/api/dlna/server/scan", methods=["POST"])
+def dlna_server_scan_api():
+    data = request.json or {}
+    try:
+        timeout = int(data.get("timeout") or 5)
+    except Exception:
+        timeout = 5
+    timeout = max(2, min(timeout, 15))
+    try:
+        servers = dlna_server.discover_servers(timeout=timeout)
+        return jsonify({"ok": True, "servers": servers})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e) or e.__class__.__name__}), 500
+
+
+@app.route("/api/dlna/server/browse")
+def dlna_server_browse_api():
+    location = request.args.get("location", "").strip()
+    object_id = request.args.get("object_id", "0").strip() or "0"
+    if not location:
+        return jsonify({"ok": False, "error": "No server location"}), 400
+    try:
+        start = int(request.args.get("start", 0))
+    except Exception:
+        start = 0
+    try:
+        count = int(request.args.get("count", 200))
+    except Exception:
+        count = 200
+    try:
+        data = dlna_server.browse(location, object_id, start, count)
+        return jsonify({"ok": True, **data})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e) or e.__class__.__name__}), 500
+
+
+@app.route("/api/dlna/server/search")
+def dlna_server_search_api():
+    location = request.args.get("location", "").strip()
+    query = request.args.get("q", "").strip()
+    container_id = request.args.get("container_id", "0").strip() or "0"
+    if not location:
+        return jsonify({"ok": False, "error": "No server location"}), 400
+    if not query:
+        return jsonify({"ok": False, "error": "No search query"}), 400
+    try:
+        data = dlna_server.search(location, query, container_id)
+        return jsonify({"ok": True, **data})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e) or e.__class__.__name__}), 500
 
@@ -4066,6 +4165,7 @@ def airplay_select_api():
 def airplay_play_api():
     data = request.json or {}
     rel = str(data.get("file") or "").strip()
+    direct_url = str(data.get("url") or "").strip()
     title = str(data.get("title") or "").strip()
     artist = str(data.get("artist") or "").strip()
     album = str(data.get("album") or "").strip()
@@ -4078,19 +4178,54 @@ def airplay_play_api():
             "error": "No AirPlay device selected — scan and pick one in Settings"
         }), 400
 
-    if not rel:
-        return jsonify({"ok": False, "error": "No file"}), 400
+    if not rel and not direct_url:
+        return jsonify({"ok": False, "error": "No file or url"}), 400
 
-    full, err = resolve_music_file(rel)
-    if err:
-        return jsonify({"ok": False, "error": err}), 404
+    full = ""
+    media_url = ""
+    if direct_url.startswith(("http://", "https://")):
+        media_url = direct_url
+        if not title:
+            title = os.path.basename(urllib.parse.urlparse(direct_url).path) or "Track"
+    elif rel:
+        full, err = resolve_music_file(rel)
+        if err:
+            return jsonify({"ok": False, "error": err}), 404
+        if full.startswith(("http://", "https://")):
+            media_url = full
+        else:
+            title = title or os.path.basename(rel)
+            try:
+                def meta(client):
+                    rows = client.find("file", rel)
+                    return rows[0] if rows else {}
+
+                tags = with_mpd(meta)
+                if isinstance(tags, dict) and tags.get("file"):
+                    title = tags.get("title") or title
+                    artist = tags.get("artist") or artist
+                    album = tags.get("album") or album
+            except Exception:
+                pass
+
+            base = dlna_public_base()
+            if not base:
+                return jsonify({
+                    "ok": False,
+                    "error": "Set DLNA public base URL in Settings (e.g. http://192.168.9.232:5000) so AirPlay can stream files"
+                }), 400
+            if not DLNA_CONFIG.get("public_base"):
+                DLNA_CONFIG["public_base"] = base
+                save_config()
+            media_url = build_dlna_stream_url(rel, base)
 
     creds = (AIRPLAY_CONFIG.get("credentials") or {}).get(identifier) or ""
     try:
-        airplay_cast.play_file(
+        airplay_cast.play_media(
             identifier=identifier,
             address=address,
-            file_path=full,
+            file_path=full if full and not full.startswith("http") else "",
+            media_url=media_url,
             credentials=creds,
             title=title,
             artist=artist,
@@ -4100,6 +4235,7 @@ def airplay_play_api():
             "ok": True,
             "device": AIRPLAY_CONFIG.get("selected_name") or identifier or address,
             "file": rel,
+            "url": media_url,
             "title": title,
         })
     except Exception as e:

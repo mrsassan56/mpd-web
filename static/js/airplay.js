@@ -34,9 +34,15 @@ function syncAirplayUi() {
     });
 
     const bar = document.getElementById("airplayBarControls");
-    if (bar) bar.style.display = hasAirplayTarget() ? "flex" : "none";
+    if (bar) {
+        const show = hasAirplayTarget() &&
+            typeof isAirplayOutput === "function" && isAirplayOutput();
+        bar.style.display = show ? "flex" : "none";
+    }
 
-    fillAirplaySelect();
+    if (typeof syncOutputSelect === "function") {
+        syncOutputSelect();
+    }
 
     const list = document.getElementById("airplayDeviceList");
     if (list && list.dataset.bound === "1") {
@@ -49,6 +55,10 @@ function syncAirplayUi() {
 }
 
 function fillAirplaySelect() {
+    if (typeof syncOutputSelect === "function") {
+        syncOutputSelect();
+        return;
+    }
     const sel = document.getElementById("airplaySelect");
     if (!sel) return;
     clearElement(sel);
@@ -119,6 +129,7 @@ async function onAirplaySelectChange() {
         rememberLocalAirplayDevice(airplaySelected);
         syncAirplayUi();
         showAirplayMsg("AirPlay → " + airplayTargetLabel() + "…");
+        if (typeof syncOutputSelect === "function") syncOutputSelect();
         await castCurrentSong();
     } catch (e) {
         showAirplayMsg("Select failed: " + (e.message || String(e)));
@@ -239,6 +250,7 @@ async function clearAirplayTarget() {
         await airplaySelect({identifier: "", address: "", name: ""});
         airplaySelected = {identifier: "", address: "", name: "", has_credentials: false};
         syncAirplayUi();
+        if (typeof syncOutputSelect === "function") syncOutputSelect();
         const list = document.getElementById("airplayDeviceList");
         if (list) renderAirplayDeviceList(list, airplayDevicesCache);
         showAirplayMsg("AirPlay target cleared");

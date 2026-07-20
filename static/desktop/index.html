@@ -22,7 +22,10 @@
     <aside class="sidebar">
         <div class="brand">
             <span class="brand-mark"></span>
-            <span class="brand-name">MPD</span>
+            <select id="librarySourceSelect" class="brand-select" onchange="setLibrarySource(this.value)" title="Library source">
+                <option value="mpd">MPD</option>
+                <option value="dlna">DLNA</option>
+            </select>
         </div>
 
         <nav class="nav">
@@ -38,14 +41,17 @@
             <button class="nav-item" data-view="playlists" onclick="openLikedFavorites()">
                 <span class="nav-icon">♥</span> Liked
             </button>
-            <button class="nav-item" data-view="library-folders" onclick="showView('library'); setLibMode('folders')">
+            <button class="nav-item nav-mpd-only" data-view="library-folders" onclick="showView('library'); setLibMode('folders')">
                 <span class="nav-icon">▤</span> Folders
             </button>
-            <button class="nav-item" data-view="library-artists" onclick="showView('library'); setLibMode('artists')">
+            <button class="nav-item nav-mpd-only" data-view="library-artists" onclick="showView('library'); setLibMode('artists')">
                 <span class="nav-icon">◎</span> Artists
             </button>
-            <button class="nav-item" data-view="library" onclick="showView('library'); setLibMode('albums')">
+            <button class="nav-item nav-mpd-only" data-view="library" onclick="showView('library'); setLibMode('albums')">
                 <span class="nav-icon">◉</span> Albums
+            </button>
+            <button class="nav-item nav-dlna-only" data-view="library-dlna" onclick="showView('library')" style="display:none">
+                <span class="nav-icon">▤</span> Browse
             </button>
             <button class="nav-item" data-view="search" onclick="showView('search')">
                 <span class="nav-icon">⌕</span> Search
@@ -59,19 +65,6 @@
         </nav>
 
         <div class="sidebar-footer">
-            <label class="player-label">Output</label>
-            <select id="playerSelect" onchange="changePlayer()"></select>
-            <label class="player-label cast-label">
-                <span class="dlna-icon" title="DLNA cast" aria-hidden="true"></span>
-                Cast
-            </label>
-            <select id="castSelect" onchange="onCastSelectChange()" title="DLNA cast target">
-                <option value="">— Off —</option>
-            </select>
-            <label class="player-label cast-label">AirPlay</label>
-            <select id="airplaySelect" onchange="onAirplaySelectChange()" title="AirPlay target">
-                <option value="">— Off —</option>
-            </select>
             <a class="mobile-link" href="/m" onclick="localStorage.removeItem('mpd-prefer-desktop')">
                 <span class="nav-icon">📱</span><span class="mobile-link-text">Mobile view →</span>
             </a>
@@ -80,7 +73,15 @@
 
     <div class="workspace">
         <header class="topbar">
-            <h1 class="view-heading" id="viewHeading">Now Playing</h1>
+            <div class="topbar-main">
+                <h1 class="view-heading" id="viewHeading">Now Playing</h1>
+                <div class="topbar-output">
+                    <div class="output-group output-group-unified">
+                        <label class="output-label" for="outputSelect">Output</label>
+                        <select id="outputSelect" class="output-select output-select-unified" onchange="onOutputSelectChange()" title="Playback output (M=MPD, D=DLNA, A=AirPlay)"></select>
+                    </div>
+                </div>
+            </div>
             <div class="topbar-actions">
                 <button type="button" class="ghost top-icon-btn timer-btn" id="sleepTimerBtn" onclick="toggleSleepPopover()" title="Sleep timer">T</button>
                 <a class="topbar-mobile-link" href="/m" onclick="localStorage.removeItem('mpd-prefer-desktop')">📱 Mobile</a>
@@ -143,6 +144,13 @@
                     <button class="ghost" onclick="updateDatabase()">Update library</button>
                     <button class="pill accent play-folder-btn" id="playFolderBtn" onclick="playCurrentFolder()" title="Play this folder">▶ Play</button>
                 </div>
+                <div id="dlnaServerControls" class="toolbar folder-toolbar" style="display:none">
+                    <select id="dlnaServerSelect" class="dlna-server-select" onchange="onDlnaServerSelectChange()" title="DLNA server"></select>
+                    <span class="path">Path: <span id="dlnaCurrentPath">Root</span></span>
+                    <button class="ghost" onclick="dlnaBrowseHome()" title="Back to root">←</button>
+                    <button class="ghost" onclick="dlnaBrowseUp()" title="Up one folder">↑</button>
+                    <button class="ghost" onclick="scanDlnaServers()" title="Scan network">Scan</button>
+                </div>
                 <div id="libContext" class="lib-context" style="display:none"></div>
                 <div id="browser" class="browser-pane"></div>
             </section>
@@ -194,9 +202,10 @@
                 <div id="recentList" class="scroll-pane"></div>
             </section>
 
-            <section id="view-settings" class="view">
+            <section id="view-settings" class="view settings-view">
+                <div class="settings-scroll">
                 <p class="settings-intro">Configure MPD output devices. Changes are saved on the Pi and persist across restarts.</p>
-                <div id="settingsPlayers" class="settings-list"></div>
+                <div id="settingsPlayers" class="settings-list settings-players-grid"></div>
                 <div class="toolbar settings-toolbar">
                     <button class="ghost" onclick="addSettingsPlayer()">+ Add output</button>
                     <button class="pill accent" onclick="saveSettingsPlayers()">Save settings</button>
@@ -265,6 +274,7 @@
                 <div class="meta" id="lbHint"></div>
 
                 <div class="settings-msg" id="settingsMsg"></div>
+                </div>
             </section>
         </main>
     </div>
@@ -324,18 +334,20 @@
     <script src="/static/js/api.js?v=8"></script>
     <script src="/static/js/utils.js"></script>
     <script src="/static/js/playlists.js"></script>
-    <script src="/static/js/dlna.js?v=8"></script>
-    <script src="/static/js/airplay.js?v=8"></script>
+    <script src="/static/js/dlna.js?v=10"></script>
+    <script src="/static/js/airplay.js?v=10"></script>
+    <script src="/static/js/output.js?v=5"></script>
+    <script src="/static/js/dlna-server.js?v=3"></script>
     <script src="/static/js/shortcuts.js"></script>
     <script src="/static/js/sleeptimer.js"></script>
     <script src="/static/js/browserout.js?v=7"></script>
-    <script src="/static/js/settings.js?v=5"></script>
+    <script src="/static/js/settings.js?v=6"></script>
     <script>
     window.addEventListener("error", function(e) {
         var t = document.getElementById("title");
         if (t) t.innerText = "JS ERROR: " + (e.message || String(e));
     });
     </script>
-    <script src="/static/desktop/app.js?v=7"></script>
+    <script src="/static/desktop/app.js?v=11"></script>
 </body>
 </html>

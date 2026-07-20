@@ -159,19 +159,20 @@ async def _find_conf(identifier: str, address: str = "", timeout: float = 5):
     return None
 
 
-async def _async_play_file(
+async def _async_play_media(
     identifier: str,
     address: str,
-    file_path: str,
+    file_path: str = "",
+    media_url: str = "",
     credentials: str = "",
     title: str = "",
     artist: str = "",
     album: str = "",
-    stop_flag: Optional[threading.Event] = None,
 ):
     from pyatv import connect
     from pyatv.const import Protocol
     from pyatv.interface import MediaMetadata
+    from pyatv.exceptions import NotSupportedError
 
     loop = asyncio.get_running_loop()
     conf = await _find_conf(identifier, address=address, timeout=6)
@@ -179,7 +180,6 @@ async def _async_play_file(
         raise RuntimeError("AirPlay device not found on network — scan again")
 
     if credentials:
-        # Apply saved credentials to AirPlay and RAOP services when present.
         for protocol in (Protocol.AirPlay, Protocol.RAOP):
             try:
                 svc = conf.get_service(protocol)
@@ -192,30 +192,119 @@ async def _async_play_file(
         atv = await connect(conf, loop=loop)
     except TypeError:
         atv = await connect(conf, loop)
-    try:
-        if stop_flag and stop_flag.is_set():
-            return
-        metadata = None
-        if title or artist or album:
-            try:
-                metadata = MediaMetadata(
-                    title=title or None,
-                    artist=artist or None,
-                    album=album or None,
-                )
-            except Exception:
-                metadata = None
 
-        # Prefer RAOP stream_file for speakers; falls back internally as needed.
-        if metadata is not None:
-            await atv.stream.stream_file(file_path, metadata=metadata)
-        else:
-            await atv.stream.stream_file(file_path)
+    metadata = None
+    if title or artist or album:
+        try:
+            metadata = MediaMetadata(
+                title=title or None,
+                artist=artist or None,
+                album=album or None,
+            )
+        except Exception:
+            metadata = None
+
+    try:
+        url = (media_url or "").strip()
+        path = (file_path or "").strip()
+        last_err = None
+
+        if url.startswith(("http://", "https://")):
+            try:
+                if metadata is not None:
+                    await atv.stream.play_url(url, metadata=metadata)
+                else:
+                    await atv.stream.play_url(url)
+                return
+            except NotSupportedError as e:
+                last_err = e
+                logger.info("AirPlay play_url not supported, falling back to stream_file")
+            except Exception as e:
+                last_err = e
+                logger.info("AirPlay play_url failed (%s), trying stream_file", e)
+
+        if path:
+            if metadata is not None:
+                await atv.stream.stream_file(path, metadata=metadata)
+            else:
+                await atv.stream.stream_file(path)
+            return
+
+        if last_err:
+            raise RuntimeError("AirPlay could not play URL: " + str(last_err))
+        raise ValueError("No file path or media URL to play")
     finally:
         try:
             await atv.close()
         except Exception:
             pass
+
+
+async def _async_play_file(
+    identifier: str,
+    address: str,
+    file_path: str,
+    credentials: str = "",
+    title: str = "",
+    artist: str = "",
+    album: str = "",
+    stop_flag: Optional[threading.Event] = None,
+):
+    if stop_flag and stop_flag.is_set():
+        return
+    await _async_play_media(
+        identifier=identifier,
+        address=address,
+        file_path=file_path,
+        credentials=credentials,
+        title=title,
+        artist=artist,
+        album=album,
+    )
+
+
+def play_media(
+    identifier: str,
+    file_path: str = "",
+    media_url: str = "",
+    address: str = "",
+    credentials: str = "",
+    title: str = "",
+    artist: str = "",
+    album: str = "",
+) -> Dict[str, Any]:
+    """Play via HTTP URL (preferred for Apple TV) or local file (RAOP speakers)."""
+    if not identifier and not address:
+        raise ValueError("No AirPlay device identifier")
+    if not (media_url or file_path):
+        raise ValueError("No media URL or file path")
+
+    with _PLAY_LOCK:
+        prev = _ACTIVE.get("stop")
+        if isinstance(prev, threading.Event):
+            prev.set()
+
+    _run(_async_play_media(
+        identifier=identifier,
+        address=address,
+        file_path=file_path,
+        media_url=media_url,
+        credentials=credentials,
+        title=title,
+        artist=artist,
+        album=album,
+    ), timeout=75)
+
+    with _PLAY_LOCK:
+        _ACTIVE["identifier"] = identifier
+        _ACTIVE["file"] = file_path or media_url
+
+    return {
+        "ok": True,
+        "identifier": identifier,
+        "file": file_path,
+        "url": media_url,
+    }
 
 
 def play_file(
@@ -226,12 +315,20 @@ def play_file(
     title: str = "",
     artist: str = "",
     album: str = "",
+    media_url: str = "",
 ) -> Dict[str, Any]:
-    """Start casting a local audio file in a background thread."""
-    if not identifier and not address:
-        raise ValueError("No AirPlay device identifier")
-    if not file_path:
-        raise ValueError("No file path")
+    """Play on AirPlay — prefers LAN HTTP URL when provided."""
+    if media_url:
+        return play_media(
+            identifier=identifier,
+            address=address,
+            file_path=file_path,
+            media_url=media_url,
+            credentials=credentials,
+            title=title,
+            artist=artist,
+            album=album,
+        )
 
     stop_flag = threading.Event()
 
@@ -257,7 +354,6 @@ def play_file(
                     _ACTIVE["file"] = ""
 
     with _PLAY_LOCK:
-        # Stop any previous cast
         prev = _ACTIVE.get("stop")
         if isinstance(prev, threading.Event):
             prev.set()
